@@ -1,5 +1,5 @@
 import { renderDashboard } from './pages/dashboard.js';
-import { renderReceipts, renderIssues, renderReturns, renderAdjustments } from './pages/documents.js';
+import { renderReceipts, renderIssues, renderReturns, renderAdjustments, renderTransfers } from './pages/documents.js';
 import { renderStock, renderSerials, renderMoves } from './pages/stock.js';
 import { renderReports } from './pages/reports.js';
 import { renderMaster, renderUsers } from './pages/master.js';
@@ -10,6 +10,7 @@ export const routes = {
   '#/receipts': { title: 'รับอุปกรณ์เข้า', render: renderReceipts },
   '#/issues': { title: 'เบิกอุปกรณ์ออก', render: renderIssues },
   '#/returns': { title: 'รับคืนอุปกรณ์', render: renderReturns },
+  '#/transfers': { title: 'โอนย้ายระหว่างคลัง', render: renderTransfers },
   '#/adjustments': { title: 'ปรับปรุงสต็อก', render: renderAdjustments },
   '#/stock': { title: 'ยอดคงเหลือในคลัง', render: renderStock },
   '#/serials': { title: 'ทะเบียนทรัพย์สิน / Serial', render: renderSerials },

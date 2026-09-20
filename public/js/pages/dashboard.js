@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { esc, fmtInt, fmtMoney, fmtDate, table, moveBadge, MONTH_FULL } from '../ui.js';
+import { whParam, whLabel, state } from '../app.js';
 
 const stat = (icon, tone, label, value, hint = '') => `
   <div class="stat">
@@ -45,11 +46,36 @@ function trendChart(rows) {
 }
 
 export async function renderDashboard(view) {
-  const d = await api.get('/dashboard');
+  const d = await api.get(`/dashboard${api.qs(whParam())}`);
   const t = d.totals;
   const now = new Date();
 
+  // แถวเปรียบเทียบรายคลัง แสดงเฉพาะตอนดูรวมทุกคลัง
+  const whCards = (!state.warehouseId && d.warehouses?.length > 1) ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h3>🏬 เปรียบเทียบคลัง</h3><div class="spacer"></div>
+        <a href="#/stock" class="btn btn-sm">ดูรายอุปกรณ์</a></div>
+      <div class="card-body">
+        <div class="grid cols-${Math.min(4, d.warehouses.length + 1)}">
+          ${d.warehouses.map((w) => `
+            <div class="stat"><div class="icon tone-info">🏬</div><div>
+              <div class="label">คลัง ${esc(w.code)}</div>
+              <div class="value">${fmtInt(w.balance)}</div>
+              <div class="hint">฿${fmtMoney(w.value)} · ${fmtInt(w.item_count)} รายการ</div>
+            </div></div>`).join('')}
+          <div class="stat"><div class="icon tone-success">Σ</div><div>
+            <div class="label">รวมทุกคลัง</div>
+            <div class="value">${fmtInt(d.totals.total_qty)}</div>
+            <div class="hint">฿${fmtMoney(d.totals.total_value)}</div>
+          </div></div>
+        </div>
+      </div>
+    </div>` : '';
+
   view.innerHTML = `
+    ${state.warehouseId ? `<div class="toolbar"><span class="badge tone-primary">กำลังดูเฉพาะ ${esc(whLabel())}</span>
+      <span class="muted small">เลือก “ทุกคลัง (รวม)” ที่แถบด้านบนเพื่อดูภาพรวมทั้งหมด</span></div>` : ''}
+    ${whCards}
     <div class="grid cols-5" style="margin-bottom:16px">
       ${stat('📦', 'tone-primary', 'อุปกรณ์ในระบบ', fmtInt(t.item_count), 'รายการที่เปิดใช้งาน')}
       ${stat('🔢', 'tone-info', 'จำนวนคงเหลือรวม', fmtInt(t.total_qty), 'ทุกหมวดหมู่รวมกัน')}
@@ -97,7 +123,7 @@ export async function renderDashboard(view) {
           ${table(d.recentMoves, [
             { key: 'moved_at', label: 'วันที่', className: 'nowrap', render: (r) => fmtDate(r.moved_at) },
             { key: 'move_type', label: 'ประเภท', render: (r) => moveBadge(r.move_type) },
-            { key: 'item_name', label: 'อุปกรณ์', render: (r) => `${esc(r.item_name)}${r.serial_no ? `<div class="muted small mono">${esc(r.serial_no)}</div>` : ''}` },
+            { key: 'item_name', label: 'อุปกรณ์', render: (r) => `${esc(r.item_name)}${r.warehouse_code ? ` <span class="badge badge-gray">${esc(r.warehouse_code)}</span>` : ''}${r.serial_no ? `<div class="muted small mono">${esc(r.serial_no)}</div>` : ''}` },
             { key: 'qty', label: 'จำนวน', className: 'num', render: (r) => `<b style="color:${r.qty > 0 ? 'var(--success)' : 'var(--danger)'}">${r.qty > 0 ? '+' : ''}${fmtInt(r.qty)}</b>` },
             { key: 'doc_no', label: 'เอกสาร', render: (r) => `<span class="mono small">${esc(r.doc_no)}</span>` },
           ], { emptyText: 'ยังไม่มีการเคลื่อนไหว' })}

@@ -8,6 +8,28 @@ import { serialTimeline } from '../services/stock.js';
 export function masterRoutes(db) {
   const router = Router();
 
+  /* ---------------- คลังสินค้า ---------------- */
+  router.use('/warehouses', crudRouter(db, {
+    table: 'warehouses',
+    label: 'คลังสินค้า',
+    searchCols: ['code', 'name', 'location'],
+    orderBy: 'sort_order, code COLLATE NOCASE',
+    references: [
+      { table: 'stock_moves', column: 'warehouse_id', label: 'รายการเดินสต็อก' },
+      { table: 'receipts', column: 'warehouse_id', label: 'ใบรับเข้า' },
+      { table: 'issues', column: 'warehouse_id', label: 'ใบเบิก' },
+      { table: 'serials', column: 'warehouse_id', label: 'ทรัพย์สิน' },
+    ],
+    parse: (b, { isUpdate }) => ({
+      ...(isUpdate && b.code === undefined ? {} : { code: str(b.code, 'รหัสคลัง', { max: 30 }) }),
+      ...(isUpdate && b.name === undefined ? {} : { name: str(b.name, 'ชื่อคลัง', { max: 120 }) }),
+      ...(isUpdate && b.location === undefined ? {} : { location: str(b.location, 'สถานที่ตั้ง', { required: false, max: 200 }) }),
+      ...(isUpdate && b.note === undefined ? {} : { note: str(b.note, 'หมายเหตุ', { required: false, max: 500 }) }),
+      ...(isUpdate && b.sort_order === undefined ? {} : { sort_order: int(b.sort_order, 'ลำดับ', { required: false, def: 100, min: 0 }) }),
+      ...activeField(b, isUpdate),
+    }),
+  }));
+
   /* ---------------- หมวดหมู่อุปกรณ์ ---------------- */
   router.use('/categories', crudRouter(db, {
     table: 'categories',
@@ -135,10 +157,12 @@ export function masterRoutes(db) {
     const id = int(req.params.id, 'id');
     const status = req.query.status;
     const rows = db.prepare(`
-      SELECT s.*, e.name AS holder_name, e.emp_code AS holder_code, d.name AS holder_dept
+      SELECT s.*, e.name AS holder_name, e.emp_code AS holder_code, d.name AS holder_dept,
+             w.code AS warehouse_code, w.name AS warehouse_name
       FROM serials s
       LEFT JOIN employees e ON e.id = s.holder_id
       LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN warehouses w ON w.id = s.warehouse_id
       WHERE s.item_id = @item_id ${status ? 'AND s.status = @status' : ''}
       ORDER BY s.serial_no COLLATE NOCASE
     `).all(status ? { item_id: id, status } : { item_id: id });
@@ -157,19 +181,22 @@ export function masterRoutes(db) {
     if (req.query.status) { where.push('s.status = @status'); params.status = req.query.status; }
     if (req.query.item_id) { where.push('s.item_id = @item_id'); params.item_id = Number(req.query.item_id); }
     if (req.query.holder_id) { where.push('s.holder_id = @holder_id'); params.holder_id = Number(req.query.holder_id); }
+    if (req.query.warehouse_id) { where.push('s.warehouse_id = @warehouse_id'); params.warehouse_id = Number(req.query.warehouse_id); }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const base = `
       FROM serials s
       JOIN items i ON i.id = s.item_id
       LEFT JOIN employees e ON e.id = s.holder_id
       LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN warehouses w ON w.id = s.warehouse_id
       ${clause}`;
     const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
     const perPage = int(req.query.per_page, 'per_page', { required: false, def: 100, min: 1, max: 1000 });
     const page = int(req.query.page, 'page', { required: false, def: 1, min: 1 });
     const data = db.prepare(`
       SELECT s.*, i.sku, i.name AS item_name, i.unit,
-             e.name AS holder_name, e.emp_code AS holder_code, d.name AS holder_dept
+             e.name AS holder_name, e.emp_code AS holder_code, d.name AS holder_dept,
+             w.code AS warehouse_code, w.name AS warehouse_name
       ${base}
       ORDER BY s.status, s.serial_no COLLATE NOCASE
       LIMIT @limit OFFSET @offset
@@ -180,9 +207,11 @@ export function masterRoutes(db) {
   serials.get('/:id', wrap((req, res) => {
     const id = int(req.params.id, 'id');
     const row = db.prepare(`
-      SELECT s.*, i.sku, i.name AS item_name, e.name AS holder_name, e.emp_code AS holder_code
+      SELECT s.*, i.sku, i.name AS item_name, e.name AS holder_name, e.emp_code AS holder_code,
+             w.code AS warehouse_code, w.name AS warehouse_name
       FROM serials s JOIN items i ON i.id = s.item_id
       LEFT JOIN employees e ON e.id = s.holder_id
+      LEFT JOIN warehouses w ON w.id = s.warehouse_id
       WHERE s.id = ?
     `).get(id);
     if (!row) throw notFound('ไม่พบ Serial ที่ระบุ');

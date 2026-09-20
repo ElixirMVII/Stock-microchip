@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hashPassword } from '../server/lib/auth.js';
-import { ITEM, EMP, startServer, testDb } from './helpers.js';
+import { ITEM, EMP, WH, startServer, testDb } from './helpers.js';
 
 /* ---------------- การยืนยันตัวตนและสิทธิ์ ---------------- */
 
@@ -40,7 +40,7 @@ test('สิทธิ์ viewer ดูได้อย่างเดียว �
 
   await s.login('view1', 'viewer1234');
   assert.equal((await s.get('/api/stock/balance')).status, 200, 'viewer ต้องดูได้');
-  const create = await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 1 }] });
+  const create = await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 1 }] });
   assert.equal(create.status, 403);
   assert.equal((await s.get('/api/users')).status, 403, 'viewer เข้าหน้าผู้ใช้ไม่ได้');
 });
@@ -53,7 +53,7 @@ test('สิทธิ์ officer บันทึกเอกสารได้ �
   t.after(() => s.close());
 
   await s.login('off1', 'officer1234');
-  const create = await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 4 }] });
+  const create = await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 4 }] });
   assert.equal(create.status, 201);
   assert.equal((await s.get('/api/users')).status, 403);
   assert.equal((await s.del('/api/items/1')).status, 403, 'ลบข้อมูลหลักต้องเป็น admin');
@@ -117,7 +117,7 @@ test('บันทึกใบรับเข้าแล้วยอดคง�
   await s.login();
 
   const res = await s.post('/api/receipts', {
-    receive_date: '2026-08-11', po_no: '22001999',
+    warehouse_id: WH.mmt, receive_date: '2026-08-11', po_no: '22001999',
     lines: [{ item_id: ITEM.mouse, qty: 17, unit_cost: 350 }],
   });
   assert.equal(res.status, 201);
@@ -136,9 +136,9 @@ test('บันทึกใบเบิกพร้อม serial และดู
   t.after(() => s.close());
   await s.login();
 
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.monitor, qty: 2, serials: ['ST:3X76N3', 'ST:2KP76N3'] }] });
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.monitor, qty: 2, serials: ['ST:3X76N3', 'ST:2KP76N3'] }] });
   const issue = await s.post('/api/issues', {
-    issue_date: '2026-08-05', employee_id: EMP.tanakit, is_staff_id: 1, charge: true,
+    warehouse_id: WH.mmt, issue_date: '2026-08-05', employee_id: EMP.tanakit, is_staff_id: 1, charge: true,
     lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['ST:3X76N3'] }],
   });
   assert.equal(issue.status, 201);
@@ -155,10 +155,10 @@ test('เบิกเกินสต็อกผ่าน API ต้องได
   const s = await startServer();
   t.after(() => s.close());
   await s.login();
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 2 }] });
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 2 }] });
 
   const res = await s.post('/api/issues', {
-    issue_date: '2026-08-02', employee_id: EMP.tanakit, charge: true,
+    warehouse_id: WH.mmt, issue_date: '2026-08-02', employee_id: EMP.tanakit, charge: true,
     lines: [{ item_id: ITEM.mouse, qty: 5 }],
   });
   assert.equal(res.status, 409);
@@ -172,7 +172,7 @@ test('ยกเลิกเอกสารผ่าน API คืนยอดแ
   t.after(() => s.close());
   await s.login();
 
-  const r = await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] });
+  const r = await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] });
   const voided = await s.post(`/api/receipts/${r.body.id}/void`, { reason: 'คีย์ผิด' });
   assert.equal(voided.status, 200);
   assert.equal(voided.body.status, 'void');
@@ -189,10 +189,10 @@ test('ข้อมูลไม่ครบหรือรูปแบบผิ�
   await s.login();
 
   const cases = [
-    [{ receive_date: '2026-13-01', lines: [{ item_id: 1, qty: 1 }] }, /วันที่รับเข้า/],
-    [{ receive_date: '2026-08-01', lines: [] }, /อย่างน้อย 1 รายการ/],
-    [{ receive_date: '2026-08-01', lines: [{ item_id: 1, qty: 0 }] }, /ไม่น้อยกว่า 1/],
-    [{ receive_date: '2026-08-01', lines: [{ item_id: 999, qty: 1 }] }, /ไม่พบอุปกรณ์/],
+    [{ warehouse_id: WH.mmt, receive_date: '2026-13-01', lines: [{ item_id: 1, qty: 1 }] }, /วันที่รับเข้า/],
+    [{ warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [] }, /อย่างน้อย 1 รายการ/],
+    [{ warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: 1, qty: 0 }] }, /ไม่น้อยกว่า 1/],
+    [{ warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: 999, qty: 1 }] }, /ไม่พบอุปกรณ์/],
   ];
   for (const [body, re] of cases) {
     const res = await s.post('/api/receipts', body);
@@ -208,12 +208,12 @@ test('รายงานรายเดือนจัดกลุ่มคอ�
   t.after(() => s.close());
   await s.login();
 
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [
     { item_id: ITEM.monitor, qty: 1, serials: ['ST:3X76N3'] },
     { item_id: ITEM.laptop, qty: 1, serials: ['ST:6B5R034'] },
   ] });
   await s.post('/api/issues', {
-    issue_date: '2026-08-08', employee_id: EMP.tanakit, is_staff_id: 2, charge: false,
+    warehouse_id: WH.mmt, issue_date: '2026-08-08', employee_id: EMP.tanakit, is_staff_id: 2, charge: false,
     remark: 'Use old laptop B78470',
     lines: [
       { item_id: ITEM.laptop, qty: 1, serials: ['ST:6B5R034'] },
@@ -237,7 +237,7 @@ test('รายงานอุปกรณ์ใกล้หมดและท�
   t.after(() => s.close());
   await s.login();
 
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [
     { item_id: ITEM.mouse, qty: 4 },
     { item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] },
   ] });
@@ -245,7 +245,7 @@ test('รายงานอุปกรณ์ใกล้หมดและท�
   assert.ok(low.body.data.some((r) => r.sku === 'MOUSE'), 'เมาส์ 4 ชิ้น ต่ำกว่าขั้นต่ำ 5');
 
   await s.post('/api/issues', {
-    issue_date: '2026-08-05', employee_id: EMP.somchai, charge: true,
+    warehouse_id: WH.mmt, issue_date: '2026-08-05', employee_id: EMP.somchai, charge: true,
     lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] }],
   });
   const held = await s.get('/api/reports/assets-by-holder');
@@ -259,9 +259,9 @@ test('ไทม์ไลน์ของ serial บันทึกครบทุ
   t.after(() => s.close());
   await s.login();
 
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['TL-1'] }] });
-  await s.post('/api/issues', { issue_date: '2026-08-05', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['TL-1'] }] });
-  await s.post('/api/returns', { return_date: '2026-09-01', employee_id: EMP.tanakit, lines: [{ item_id: ITEM.laptop, qty: 1, condition: 'good', serials: ['TL-1'] }] });
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['TL-1'] }] });
+  await s.post('/api/issues', { warehouse_id: WH.mmt, issue_date: '2026-08-05', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['TL-1'] }] });
+  await s.post('/api/returns', { warehouse_id: WH.mmt, return_date: '2026-09-01', employee_id: EMP.tanakit, lines: [{ item_id: ITEM.laptop, qty: 1, condition: 'good', serials: ['TL-1'] }] });
 
   const found = await s.get('/api/serials?q=TL-1');
   const detail = await s.get(`/api/serials/${found.body.data[0].id}`);
@@ -273,8 +273,8 @@ test('การ์ดสต็อกแสดงยอดสะสมถูก�
   const s = await startServer();
   t.after(() => s.close());
   await s.login();
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] });
-  await s.post('/api/issues', { issue_date: '2026-08-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.mouse, qty: 3 }] });
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] });
+  await s.post('/api/issues', { warehouse_id: WH.mmt, issue_date: '2026-08-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.mouse, qty: 3 }] });
 
   const card = await s.get(`/api/stock/card/${ITEM.mouse}`);
   const running = card.body.data.map((r) => r.running_balance);
@@ -286,7 +286,7 @@ test('ส่งออก CSV ได้พร้อม BOM สำหรับ Exc
   const s = await startServer();
   t.after(() => s.close());
   await s.login();
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 6 }] });
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 6 }] });
 
   const csv = await s.raw('/api/stock/balance.csv');
   assert.equal(csv.status, 200);
@@ -304,7 +304,7 @@ test('แดชบอร์ดรวมยอดได้ถูกต้อง',
   const s = await startServer();
   t.after(() => s.close());
   await s.login();
-  await s.post('/api/receipts', { receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10, unit_cost: 350 }] });
+  await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10, unit_cost: 350 }] });
 
   const d = await s.get('/api/dashboard');
   assert.equal(d.body.totals.item_count, 3);

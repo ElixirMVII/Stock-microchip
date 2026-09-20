@@ -3,7 +3,7 @@ import { arr, bool, date, int, num, oneOf, str } from '../lib/validate.js';
 import { badRequest, notFound, wrap } from '../lib/http.js';
 import { requireRole } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
-import { docConfig, postAdjustment, postIssue, postReceipt, postReturn, voidDocument } from '../services/stock.js';
+import { docConfig, postAdjustment, postIssue, postReceipt, postReturn, postTransfer, voidDocument } from '../services/stock.js';
 
 /** เงื่อนไขกรองที่ใช้ร่วมกันทุกเอกสาร: ช่วงวันที่ สถานะ และคำค้น */
 function buildFilters(req, dateCol, searchCols) {
@@ -12,6 +12,10 @@ function buildFilters(req, dateCol, searchCols) {
   if (req.query.from) { where.push(`d.${dateCol} >= @from`); params.from = date(req.query.from, 'ตั้งแต่วันที่'); }
   if (req.query.to) { where.push(`d.${dateCol} <= @to`); params.to = date(req.query.to, 'ถึงวันที่'); }
   if (req.query.status) { where.push('d.status = @status'); params.status = oneOf(req.query.status, 'สถานะ', ['posted', 'void']); }
+  if (req.query.warehouse_id) {
+    where.push('d.warehouse_id = @warehouse_id');
+    params.warehouse_id = int(req.query.warehouse_id, 'คลัง');
+  }
   if (req.query.q) {
     where.push(`(${searchCols.map((c) => `${c} LIKE @q`).join(' OR ')})`);
     params.q = `%${req.query.q}%`;
@@ -59,11 +63,13 @@ export function documentRoutes(db) {
     const base = `FROM receipts d
       LEFT JOIN suppliers s ON s.id = d.supplier_id
       LEFT JOIN users u ON u.id = d.created_by
+      JOIN warehouses w ON w.id = d.warehouse_id
       ${clause}`;
     const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
     const { limit, page } = paginate(req);
     const data = db.prepare(`
       SELECT d.*, s.name AS supplier_name, u.full_name AS created_by_name,
+             w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COALESCE(SUM(qty), 0) FROM receipt_lines WHERE receipt_id = d.id) AS total_qty,
              (SELECT COUNT(*) FROM receipt_lines WHERE receipt_id = d.id)               AS line_count,
              (SELECT COALESCE(SUM(qty * unit_cost), 0) FROM receipt_lines WHERE receipt_id = d.id) AS total_cost
@@ -76,8 +82,10 @@ export function documentRoutes(db) {
   receipts.get('/:id', wrap((req, res) => {
     const id = int(req.params.id, 'id');
     const doc = db.prepare(`
-      SELECT d.*, s.name AS supplier_name, u.full_name AS created_by_name, v.full_name AS voided_by_name
+      SELECT d.*, s.name AS supplier_name, u.full_name AS created_by_name, v.full_name AS voided_by_name,
+             w.code AS warehouse_code, w.name AS warehouse_name
       FROM receipts d
+      JOIN warehouses w ON w.id = d.warehouse_id
       LEFT JOIN suppliers s ON s.id = d.supplier_id
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
@@ -99,6 +107,7 @@ export function documentRoutes(db) {
 
   receipts.post('/', requireRole('officer'), wrap((req, res) => {
     const data = {
+      warehouse_id: int(req.body.warehouse_id, 'คลังที่รับเข้า'),
       receive_date: date(req.body.receive_date, 'วันที่รับเข้า'),
       po_no: str(req.body.po_no, 'เลขที่ PO', { required: false, max: 60 }),
       supplier_id: int(req.body.supplier_id, 'ผู้ขาย', { required: false, def: null }),
@@ -122,6 +131,7 @@ export function documentRoutes(db) {
     const base = `
       FROM issues d
       JOIN employees e ON e.id = d.employee_id
+      JOIN warehouses w ON w.id = d.warehouse_id
       LEFT JOIN departments dp ON dp.id = e.department_id
       LEFT JOIN is_staff st ON st.id = d.is_staff_id
       ${full}`;
@@ -129,7 +139,7 @@ export function documentRoutes(db) {
     const { limit, page } = paginate(req);
     const data = db.prepare(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name,
-             st.name AS is_staff_name,
+             st.name AS is_staff_name, w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COALESCE(SUM(qty), 0) FROM issue_lines WHERE issue_id = d.id) AS total_qty,
              (SELECT COUNT(*) FROM issue_lines WHERE issue_id = d.id)              AS line_count
       ${base}
@@ -142,9 +152,11 @@ export function documentRoutes(db) {
     const id = int(req.params.id, 'id');
     const doc = db.prepare(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name,
-             st.name AS is_staff_name, u.full_name AS created_by_name, v.full_name AS voided_by_name
+             st.name AS is_staff_name, u.full_name AS created_by_name, v.full_name AS voided_by_name,
+             w.code AS warehouse_code, w.name AS warehouse_name
       FROM issues d
       JOIN employees e ON e.id = d.employee_id
+      JOIN warehouses w ON w.id = d.warehouse_id
       LEFT JOIN departments dp ON dp.id = e.department_id
       LEFT JOIN is_staff st ON st.id = d.is_staff_id
       LEFT JOIN users u ON u.id = d.created_by
@@ -166,6 +178,7 @@ export function documentRoutes(db) {
 
   issues.post('/', requireRole('officer'), wrap((req, res) => {
     const data = {
+      warehouse_id: int(req.body.warehouse_id, 'คลังที่เบิกออก'),
       issue_date: date(req.body.issue_date, 'วันที่เบิก'),
       employee_id: int(req.body.employee_id, 'ผู้เบิก'),
       is_staff_id: int(req.body.is_staff_id, 'เจ้าหน้าที่ IS', { required: false, def: null }),
@@ -186,6 +199,7 @@ export function documentRoutes(db) {
     const base = `
       FROM returns d
       JOIN employees e ON e.id = d.employee_id
+      JOIN warehouses w ON w.id = d.warehouse_id
       LEFT JOIN departments dp ON dp.id = e.department_id
       LEFT JOIN is_staff st ON st.id = d.is_staff_id
       ${clause}`;
@@ -193,6 +207,7 @@ export function documentRoutes(db) {
     const { limit, page } = paginate(req);
     const data = db.prepare(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name, st.name AS is_staff_name,
+             w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COALESCE(SUM(qty), 0) FROM return_lines WHERE return_id = d.id) AS total_qty,
              (SELECT COUNT(*) FROM return_lines WHERE return_id = d.id)              AS line_count
       ${base} ORDER BY d.return_date DESC, d.id DESC LIMIT @limit OFFSET @offset
@@ -204,9 +219,11 @@ export function documentRoutes(db) {
     const id = int(req.params.id, 'id');
     const doc = db.prepare(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name,
-             st.name AS is_staff_name, u.full_name AS created_by_name, v.full_name AS voided_by_name
+             st.name AS is_staff_name, u.full_name AS created_by_name, v.full_name AS voided_by_name,
+             w.code AS warehouse_code, w.name AS warehouse_name
       FROM returns d
       JOIN employees e ON e.id = d.employee_id
+      JOIN warehouses w ON w.id = d.warehouse_id
       LEFT JOIN departments dp ON dp.id = e.department_id
       LEFT JOIN is_staff st ON st.id = d.is_staff_id
       LEFT JOIN users u ON u.id = d.created_by
@@ -229,6 +246,7 @@ export function documentRoutes(db) {
 
   returns.post('/', requireRole('officer'), wrap((req, res) => {
     const data = {
+      warehouse_id: int(req.body.warehouse_id, 'คลังที่รับคืนเข้า'),
       return_date: date(req.body.return_date, 'วันที่รับคืน'),
       employee_id: int(req.body.employee_id, 'ผู้คืน'),
       is_staff_id: int(req.body.is_staff_id, 'เจ้าหน้าที่ IS', { required: false, def: null }),
@@ -245,11 +263,13 @@ export function documentRoutes(db) {
 
   adjustments.get('/', wrap((req, res) => {
     const { clause, params } = buildFilters(req, 'adjust_date', ['d.doc_no', 'd.note']);
-    const base = `FROM adjustments d LEFT JOIN users u ON u.id = d.created_by ${clause}`;
+    const base = `FROM adjustments d
+      LEFT JOIN users u ON u.id = d.created_by
+      JOIN warehouses w ON w.id = d.warehouse_id ${clause}`;
     const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
     const { limit, page } = paginate(req);
     const data = db.prepare(`
-      SELECT d.*, u.full_name AS created_by_name,
+      SELECT d.*, u.full_name AS created_by_name, w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COUNT(*) FROM adjustment_lines WHERE adjustment_id = d.id) AS line_count,
              (SELECT COALESCE(SUM(qty_diff), 0) FROM adjustment_lines WHERE adjustment_id = d.id) AS net_qty
       ${base}
@@ -261,8 +281,10 @@ export function documentRoutes(db) {
   adjustments.get('/:id', wrap((req, res) => {
     const id = int(req.params.id, 'id');
     const doc = db.prepare(`
-      SELECT d.*, u.full_name AS created_by_name, v.full_name AS voided_by_name
+      SELECT d.*, u.full_name AS created_by_name, v.full_name AS voided_by_name,
+             w.code AS warehouse_code, w.name AS warehouse_name
       FROM adjustments d
+      JOIN warehouses w ON w.id = d.warehouse_id
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
       WHERE d.id = ?
@@ -280,6 +302,7 @@ export function documentRoutes(db) {
 
   adjustments.post('/', requireRole('officer'), wrap((req, res) => {
     const data = {
+      warehouse_id: int(req.body.warehouse_id, 'คลังที่ปรับปรุง'),
       adjust_date: date(req.body.adjust_date, 'วันที่ปรับปรุง'),
       reason: oneOf(req.body.reason, 'สาเหตุ', ['count', 'damaged', 'lost', 'found', 'other'], { required: false, def: 'count' }),
       note: str(req.body.note, 'หมายเหตุ', { required: false, max: 500 }),
@@ -290,8 +313,81 @@ export function documentRoutes(db) {
     res.status(201).json(out);
   }));
 
+  /* ================= ใบโอนย้ายระหว่างคลัง (TRANSFER) ================= */
+  const transfers = Router();
+
+  transfers.get('/', wrap((req, res) => {
+    const where = [];
+    const params = {};
+    if (req.query.from) { where.push('d.transfer_date >= @from'); params.from = date(req.query.from, 'ตั้งแต่วันที่'); }
+    if (req.query.to) { where.push('d.transfer_date <= @to'); params.to = date(req.query.to, 'ถึงวันที่'); }
+    if (req.query.status) { where.push('d.status = @status'); params.status = oneOf(req.query.status, 'สถานะ', ['posted', 'void']); }
+    // กรองด้วยคลัง = เอกสารที่คลังนั้นเป็นต้นทางหรือปลายทาง
+    if (req.query.warehouse_id) {
+      where.push('(d.from_warehouse_id = @warehouse_id OR d.to_warehouse_id = @warehouse_id)');
+      params.warehouse_id = int(req.query.warehouse_id, 'คลัง');
+    }
+    if (req.query.q) { where.push('(d.doc_no LIKE @q OR d.note LIKE @q)'); params.q = `%${req.query.q}%`; }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const base = `
+      FROM transfers d
+      JOIN warehouses wf ON wf.id = d.from_warehouse_id
+      JOIN warehouses wt ON wt.id = d.to_warehouse_id
+      LEFT JOIN users u ON u.id = d.created_by
+      ${clause}`;
+    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const { limit, page } = paginate(req);
+    const data = db.prepare(`
+      SELECT d.*, wf.code AS from_code, wf.name AS from_name, wt.code AS to_code, wt.name AS to_name,
+             u.full_name AS created_by_name,
+             (SELECT COALESCE(SUM(qty), 0) FROM transfer_lines WHERE transfer_id = d.id) AS total_qty,
+             (SELECT COUNT(*) FROM transfer_lines WHERE transfer_id = d.id)              AS line_count
+      ${base} ORDER BY d.transfer_date DESC, d.id DESC LIMIT @limit OFFSET @offset
+    `).all({ ...params, limit, offset: (page - 1) * limit });
+    res.json({ data, total, page, per_page: limit });
+  }));
+
+  transfers.get('/:id', wrap((req, res) => {
+    const id = int(req.params.id, 'id');
+    const doc = db.prepare(`
+      SELECT d.*, wf.code AS from_code, wf.name AS from_name, wt.code AS to_code, wt.name AS to_name,
+             u.full_name AS created_by_name, v.full_name AS voided_by_name
+      FROM transfers d
+      JOIN warehouses wf ON wf.id = d.from_warehouse_id
+      JOIN warehouses wt ON wt.id = d.to_warehouse_id
+      LEFT JOIN users u ON u.id = d.created_by
+      LEFT JOIN users v ON v.id = d.voided_by
+      WHERE d.id = ?
+    `).get(id);
+    if (!doc) throw notFound('ไม่พบใบโอนย้าย');
+    doc.lines = db.prepare(`
+      SELECT l.*, i.sku, i.name AS item_name, i.unit, i.track_serial, c.name AS category_name,
+             (SELECT GROUP_CONCAT(DISTINCT m.serial_no) FROM stock_moves m
+               WHERE m.line_id = l.id AND m.doc_type = 'transfer' AND m.doc_id = l.transfer_id) AS serial_list
+      FROM transfer_lines l
+      JOIN items i ON i.id = l.item_id
+      JOIN categories c ON c.id = i.category_id
+      WHERE l.transfer_id = ? ORDER BY l.id
+    `).all(id);
+    res.json(doc);
+  }));
+
+  transfers.post('/', requireRole('officer'), wrap((req, res) => {
+    const data = {
+      transfer_date: date(req.body.transfer_date, 'วันที่โอนย้าย'),
+      from_warehouse_id: int(req.body.from_warehouse_id, 'คลังต้นทาง'),
+      to_warehouse_id: int(req.body.to_warehouse_id, 'คลังปลายทาง'),
+      note: str(req.body.note, 'หมายเหตุ', { required: false, max: 500 }),
+      lines: parseLines(req.body, 'transfer'),
+    };
+    const out = db.transaction(() => postTransfer(db, data, req.user?.id ?? null))();
+    logAudit(db, req, 'post', 'transfer', out.id, `โอนย้าย ${out.doc_no}`);
+    res.status(201).json(out);
+  }));
+
   /* ================= ยกเลิกเอกสาร (ใช้ร่วมกันทุกประเภท) ================= */
-  for (const [type, r] of [['receipt', receipts], ['issue', issues], ['return', returns], ['adjustment', adjustments]]) {
+  for (const [type, r] of [['receipt', receipts], ['issue', issues], ['return', returns],
+    ['adjustment', adjustments], ['transfer', transfers]]) {
     r.post('/:id/void', requireRole('officer'), wrap((req, res) => {
       const id = int(req.params.id, 'id');
       const reason = str(req.body?.reason, 'เหตุผลการยกเลิก', { required: false, max: 300 });
@@ -306,5 +402,6 @@ export function documentRoutes(db) {
   router.use('/issues', issues);
   router.use('/returns', returns);
   router.use('/adjustments', adjustments);
+  router.use('/transfers', transfers);
   return router;
 }

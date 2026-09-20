@@ -22,6 +22,8 @@ export function testDb() {
 
 export const ITEM = { mouse: 1, monitor: 2, laptop: 3 };
 export const EMP = { tanakit: 1, somchai: 2 };
+/** คลังเริ่มต้นที่ระบบสร้างให้อัตโนมัติ */
+export const WH = { mmt: 1, mthai: 2 };
 
 /** เปิดเซิร์ฟเวอร์ทดสอบพร้อมตัวช่วยเรียก API ที่จำคุกกี้เซสชันให้ */
 export async function startServer(db = testDb()) {
