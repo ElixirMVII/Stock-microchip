@@ -10,13 +10,15 @@ import { esc, options, fmtInt } from '../ui.js';
 let seq = 0;
 
 /**
- * @param {'receipt'|'issue'|'return'} mode
+ * @param {'receipt'|'issue'|'return'|'transfer'} mode
  * @param {Array} items รายการอุปกรณ์ทั้งหมด
  */
 export function lineEditor(mode, items) {
   const showCost = mode === 'receipt';
   const showCondition = mode === 'return';
-  const serialStatus = mode === 'receipt' ? null : mode === 'issue' ? 'in_stock' : 'issued';
+  // รับเข้า = คีย์ serial ใหม่, เบิก/โอน = เลือกจากของในคลัง, รับคืน = เลือกจากของที่ถูกเบิกไป
+  const serialStatus = mode === 'receipt' ? null
+    : mode === 'return' ? 'issued' : 'in_stock';
 
   const html = `
     <div class="card" style="margin:0">
@@ -46,7 +48,7 @@ export function lineEditor(mode, items) {
     </div>`;
 
   /** ติดตั้ง event handler หลังจากใส่ HTML ลง DOM แล้ว */
-  function mount(root, { employeeSelect } = {}) {
+  function mount(root, { employeeSelect, warehouseSelect } = {}) {
     const tbody = root.querySelector('[data-lines]');
     const emptyMsg = root.querySelector('[data-lines-empty]');
 
@@ -101,19 +103,25 @@ export function lineEditor(mode, items) {
       } else {
         box.innerHTML = '<div class="help">กำลังโหลดรายการ Serial…</div>';
         const holder = employeeSelect?.value;
-        const query = { status: serialStatus, ...(mode === 'return' && holder ? { holder_id: holder } : {}) };
         const res = await api.get(`/items/${itemId}/serials${api.qs({ status: serialStatus })}`);
         let list = res.data;
-        if (mode === 'return' && query.holder_id) {
-          const mine = list.filter((s) => String(s.holder_id) === String(query.holder_id));
+        // เบิก/โอน ต้องเลือกได้เฉพาะ serial ที่อยู่ในคลังต้นทางเท่านั้น
+        // (รับคืนไม่กรอง เพราะคืนของข้ามคลังได้)
+        const whId = warehouseSelect?.value;
+        if (whId && (mode === 'issue' || mode === 'transfer')) {
+          list = list.filter((x) => String(x.warehouse_id) === String(whId));
+        }
+        if (mode === 'return' && holder) {
+          const mine = list.filter((x) => String(x.holder_id) === String(holder));
           if (mine.length) list = mine;
         }
         box.innerHTML = list.length
           ? `<select data-serials multiple size="${Math.min(6, Math.max(3, list.length))}">
-               ${list.map((s) => `<option value="${esc(s.serial_no)}">${esc(s.serial_no)}${s.holder_name ? ` — ${esc(s.holder_name)}` : ''}</option>`).join('')}
+               ${list.map((x) => `<option value="${esc(x.serial_no)}">${esc(x.serial_no)}${x.warehouse_code ? ` [${esc(x.warehouse_code)}]` : ''}${x.holder_name ? ` — ${esc(x.holder_name)}` : ''}</option>`).join('')}
              </select>
              <div class="help" data-serial-count>เลือกได้หลายรายการ (กด Ctrl/Cmd ค้างไว้) · มีให้เลือก ${fmtInt(list.length)} ชิ้น</div>`
-          : `<div class="help" style="color:var(--danger)">ไม่มี Serial ที่${mode === 'issue' ? 'พร้อมจ่ายในคลัง' : 'ถูกเบิกออกไป'}สำหรับอุปกรณ์นี้</div>`;
+          : `<div class="help" style="color:var(--danger)">ไม่มี Serial ที่${
+              mode === 'return' ? 'ถูกเบิกออกไป' : 'พร้อมจ่ายในคลังที่เลือก'}สำหรับอุปกรณ์นี้</div>`;
       }
       syncQty(tr);
     }
@@ -157,10 +165,10 @@ export function lineEditor(mode, items) {
     });
     root.querySelector('[data-add-line]').addEventListener('click', () => addLine());
 
-    // เมื่อเปลี่ยนผู้คืน ให้โหลด Serial ใหม่ให้ตรงกับผู้ถือครอง
-    employeeSelect?.addEventListener('change', () => {
-      if (mode === 'return') tbody.querySelectorAll('[data-line]').forEach((tr) => refreshSerials(tr));
-    });
+    const refreshAll = () => tbody.querySelectorAll('[data-line]').forEach((tr) => refreshSerials(tr));
+    // เปลี่ยนผู้คืน หรือเปลี่ยนคลังต้นทาง -> โหลดรายการ Serial ใหม่ให้ตรงบริบท
+    employeeSelect?.addEventListener('change', () => { if (mode === 'return') refreshAll(); });
+    warehouseSelect?.addEventListener('change', refreshAll);
 
     addLine();
 
@@ -192,7 +200,7 @@ export function lineEditor(mode, items) {
       return lines;
     }
 
-    return { collect, addLine };
+    return { collect, addLine, refreshAll };
   }
 
   return { html, mount };

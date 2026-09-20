@@ -1,12 +1,17 @@
 import { openDatabase } from './db.js';
 import { hashPassword } from './lib/auth.js';
-import { postIssue, postReceipt } from './services/stock.js';
+import { postIssue, postReceipt, postTransfer } from './services/stock.js';
 
 /* ============================================================
  *  ข้อมูลตั้งต้นของระบบ
  *  - ensureSeed(): สร้างผู้ดูแลระบบและข้อมูลพื้นฐานถ้ายังไม่มี (เรียกทุกครั้งที่เปิดเซิร์ฟเวอร์)
  *  - seedDemo():   ใส่ข้อมูลตัวอย่างตามไฟล์ Excel เดิม สำหรับทดลองใช้งาน
  * ============================================================ */
+
+const WAREHOUSES = [
+  { code: 'MMT', name: 'คลัง MMT', location: 'อาคาร MMT', sort_order: 10 },
+  { code: 'MTHAI', name: 'คลัง MTHAI', location: 'อาคาร MTHAI', sort_order: 20 },
+];
 
 const CATEGORIES = [
   { code: 'DESKTOP', name: 'Desktop / คอมพิวเตอร์ตั้งโต๊ะ', kind: 'desktop', sort_order: 10 },
@@ -27,6 +32,13 @@ export function ensureSeed(db) {
     `).run(hashPassword(password));
     console.log(`สร้างผู้ใช้เริ่มต้น  username: admin  password: ${password}`);
   }
+  // คลังถูกสร้างโดย migration อยู่แล้ว ตรงนี้เติมรายละเอียดให้ครบ
+  const insWh = db.prepare(`
+    INSERT INTO warehouses (code, name, location, sort_order) VALUES (@code, @name, @location, @sort_order)
+    ON CONFLICT(code) DO UPDATE SET name = excluded.name, location = excluded.location, sort_order = excluded.sort_order
+  `);
+  db.transaction(() => WAREHOUSES.forEach((w) => insWh.run(w)))();
+
   const hasCat = db.prepare('SELECT COUNT(*) AS n FROM categories').get().n > 0;
   if (!hasCat) {
     const ins = db.prepare('INSERT INTO categories (code, name, kind, sort_order) VALUES (@code, @name, @kind, @sort_order)');
@@ -89,6 +101,10 @@ export function seedDemo(db) {
     insItem.run(sku, name, catId(cat), brand, model, ts, min, cost)))();
   const itemId = (sku) => db.prepare('SELECT id FROM items WHERE sku = ?').get(sku).id;
 
+  const whId = (code) => db.prepare('SELECT id FROM warehouses WHERE code = ?').get(code).id;
+  const MMT = whId('MMT');
+  const MTHAI = whId('MTHAI');
+
   const admin = db.prepare("SELECT id FROM users WHERE username = 'admin'").get()?.id ?? null;
   if (db.prepare('SELECT COUNT(*) AS n FROM receipts').get().n > 0) {
     console.log('มีข้อมูลเอกสารอยู่แล้ว ข้ามการสร้างตัวอย่างเอกสาร');
@@ -97,24 +113,24 @@ export function seedDemo(db) {
 
   /* ----- ใบรับเข้า ----- */
   const receipts = [
-    { receive_date: '2026-07-20', po_no: '22001999', note: 'สั่งซื้อประจำไตรมาส', lines: [
+    { warehouse_id: MMT, receive_date: '2026-07-20', po_no: '22001999', note: 'สั่งซื้อประจำไตรมาส', lines: [
       { item_id: itemId('MOUSE-ESD'), qty: 17, unit_cost: 350 },
       { item_id: itemId('KB-USB'), qty: 12, unit_cost: 450 },
       { item_id: itemId('CABLE-HDMI'), qty: 20, unit_cost: 250 },
     ] },
-    { receive_date: '2026-07-25', po_no: '22002015', lines: [
+    { warehouse_id: MMT, receive_date: '2026-07-25', po_no: '22002015', lines: [
       { item_id: itemId('MON-E1715S'), qty: 8, unit_cost: 4500, serials: [
         'ST:3X76N3', 'ST:2KP76N3', 'ST:6FP76N3', 'ST:8TJ76N3',
         'ST:HP76N3', 'ST:HYC76N3', 'ST:83D76N3', 'ST:4FP76N3'] },
       { item_id: itemId('MON-E1715S'), qty: 1, unit_cost: 4500, serials: ['ST:3RJ76N3'] },
     ] },
-    { receive_date: '2026-07-28', po_no: '22002020', lines: [
+    { warehouse_id: MMT, receive_date: '2026-07-28', po_no: '22002020', lines: [
       { item_id: itemId('TOKEN-VPN'), qty: 10, unit_cost: 1200, serials: [
         'SN:45-3143412-9', 'SN:45-3143411-2', 'SN:45-3143566-9', 'SN:45-3143570-6',
         'SN:45-3143569-0', 'SN:45-3143567-5', 'SN:45-3143568-3', 'SN:45-3143413-6',
         'SN:45-3143414-3', 'SN:45-3143415-0'] },
     ] },
-    { receive_date: '2026-08-01', po_no: '22002044', lines: [
+    { warehouse_id: MMT, receive_date: '2026-08-01', po_no: '22002044', lines: [
       { item_id: itemId('LT-5440'), qty: 2, unit_cost: 38000, serials: ['ST:6B5R034', 'ST:6B5R088'] },
       { item_id: itemId('LT-7490'), qty: 1, unit_cost: 32000, serials: ['ST:GR4Z8Y2'] },
       { item_id: itemId('PC-QC5250'), qty: 2, unit_cost: 25000, serials: ['SN:QC5250-001', 'SN:QC5250-002'] },
@@ -122,39 +138,66 @@ export function seedDemo(db) {
       { item_id: itemId('SW-8P'), qty: 3, unit_cost: 900 },
     ] },
   ];
+  // รับเข้าที่คลัง MTHAI เพื่อให้เห็นข้อมูลแยกสองคลังชัดเจน
+  receipts.push(
+    { warehouse_id: MTHAI, receive_date: '2026-07-22', po_no: '22001999', note: 'จัดสรรให้คลัง MTHAI', lines: [
+      { item_id: itemId('MOUSE-ESD'), qty: 10, unit_cost: 350 },
+      { item_id: itemId('KB-USB'), qty: 8, unit_cost: 450 },
+      { item_id: itemId('HEADSET'), qty: 4, unit_cost: 1800 },
+    ] },
+    { warehouse_id: MTHAI, receive_date: '2026-08-02', po_no: '22002051', lines: [
+      { item_id: itemId('MON-E1715S'), qty: 3, unit_cost: 4500, serials: ['ST:MT01N3', 'ST:MT02N3', 'ST:MT03N3'] },
+      { item_id: itemId('LT-5440'), qty: 1, unit_cost: 38000, serials: ['ST:MT5440A'] },
+      { item_id: itemId('CABLE-HDMI'), qty: 12, unit_cost: 250 },
+    ] },
+  );
   db.transaction(() => receipts.forEach((r) => postReceipt(db, r, admin)))();
 
   /* ----- ใบเบิกออก (ตามตัวอย่างในไฟล์เดิม) ----- */
   const issues = [
-    { issue_date: '2026-08-01', employee_id: empId('897500'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-01', employee_id: empId('897500'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('MON-E1715S'), qty: 3, serials: ['ST:3X76N3', 'ST:2KP76N3', 'ST:6FP76N3'] }] },
-    { issue_date: '2026-08-05', employee_id: empId('893203'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-05', employee_id: empId('893203'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('TOKEN-VPN'), qty: 1, serials: ['SN:45-3143412-9'] }] },
-    { issue_date: '2026-08-05', employee_id: empId('897560'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-05', employee_id: empId('897560'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('TOKEN-VPN'), qty: 1, serials: ['SN:45-3143411-2'] }] },
-    { issue_date: '2026-08-05', employee_id: empId('891145'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-05', employee_id: empId('891145'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('TOKEN-VPN'), qty: 1, serials: ['SN:45-3143566-9'] }] },
-    { issue_date: '2026-08-08', employee_id: empId('890011'), is_staff_id: staffId('Kittisak'), charge: false,
+    { warehouse_id: MMT, issue_date: '2026-08-08', employee_id: empId('890011'), is_staff_id: staffId('Kittisak'), charge: false,
       remark: 'Use old laptop B78470 - Thanarak Wisassing / Eng. MFG',
       lines: [{ item_id: itemId('LT-5440'), qty: 1, serials: ['ST:6B5R034'] }] },
-    { issue_date: '2026-08-10', employee_id: empId('897500'), is_staff_id: staffId('Kittisak'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-10', employee_id: empId('897500'), is_staff_id: staffId('Kittisak'), charge: true,
       lines: [{ item_id: itemId('MON-E1715S'), qty: 5, serials: ['ST:8TJ76N3', 'ST:HP76N3', 'ST:HYC76N3', 'ST:83D76N3', 'ST:4FP76N3'] }] },
-    { issue_date: '2026-08-11', employee_id: empId('898820'), is_staff_id: staffId('Tantkorn'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-11', employee_id: empId('898820'), is_staff_id: staffId('Tantkorn'), charge: true,
       lines: [{ item_id: itemId('PC-QC5250'), qty: 1, serials: ['SN:QC5250-001'] }] },
-    { issue_date: '2026-08-17', employee_id: empId('895512'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-17', employee_id: empId('895512'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('TOKEN-VPN'), qty: 1, serials: ['SN:45-3143570-6'] },
               { item_id: itemId('MOUSE-ESD'), qty: 2 }] },
-    { issue_date: '2026-08-17', employee_id: empId('894477'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MMT, issue_date: '2026-08-17', employee_id: empId('894477'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('TOKEN-VPN'), qty: 1, serials: ['SN:45-3143569-0'] }] },
-    { issue_date: '2026-08-28', employee_id: empId('896633'), is_staff_id: staffId('Kittisak'), charge: false,
+    { warehouse_id: MMT, issue_date: '2026-08-28', employee_id: empId('896633'), is_staff_id: staffId('Kittisak'), charge: false,
       remark: 'Use old laptop B19686 - Irada P. / Finance',
       lines: [{ item_id: itemId('LT-7490'), qty: 1, serials: ['ST:GR4Z8Y2'] }] },
-    { issue_date: '2026-09-02', employee_id: empId('892244'), is_staff_id: staffId('Suwan'), charge: true,
+    { warehouse_id: MTHAI, issue_date: '2026-09-02', employee_id: empId('892244'), is_staff_id: staffId('Suwan'), charge: true,
       lines: [{ item_id: itemId('MOUSE-ESD'), qty: 3 }, { item_id: itemId('KB-USB'), qty: 3 }] },
-    { issue_date: '2026-09-10', employee_id: empId('898820'), is_staff_id: staffId('Tantkorn'), charge: true,
+    { warehouse_id: MTHAI, issue_date: '2026-09-10', employee_id: empId('898820'), is_staff_id: staffId('Tantkorn'), charge: true,
       lines: [{ item_id: itemId('HEADSET'), qty: 2 }, { item_id: itemId('CABLE-HDMI'), qty: 4 }] },
   ];
   db.transaction(() => issues.forEach((i) => postIssue(db, i, admin)))();
+
+  // ตัวอย่างการโอนย้ายระหว่างคลัง
+  db.transaction(() => {
+    postTransfer(db, {
+      transfer_date: '2026-09-12',
+      from_warehouse_id: MMT,
+      to_warehouse_id: MTHAI,
+      note: 'เกลี่ยสต็อกให้คลัง MTHAI',
+      lines: [
+        { item_id: itemId('MOUSE-ESD'), qty: 5 },
+        { item_id: itemId('SW-8P'), qty: 1 },
+      ],
+    }, admin);
+  })();
 
   console.log('สร้างข้อมูลตัวอย่างเรียบร้อย');
 }

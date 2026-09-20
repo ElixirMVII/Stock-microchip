@@ -155,6 +155,18 @@ a:hover { text-decoration: underline; }
 }
 .topbar .spacer { flex: 1; }
 .menu-toggle { display: none; background: none; border: 0; font-size: 20px; cursor: pointer; color: var(--text); }
+.wh-switch {
+  display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 9px;
+  background: var(--primary-soft); border: 1px solid var(--primary); border-radius: 20px;
+  flex: 0 0 auto;
+}
+.wh-switch .wh-ico { font-size: 13px; }
+.wh-switch select {
+  width: auto; border: 0; background: transparent; color: var(--primary-dark);
+  font-weight: 650; font-size: 12.5px; padding: 3px 6px; cursor: pointer;
+}
+.wh-switch select:focus { outline: none; box-shadow: none; }
+
 .user-chip {
   display: flex; align-items: center; gap: 8px; padding: 5px 10px; flex: 0 1 auto; min-width: 0;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; font-size: 12.5px;
@@ -365,6 +377,8 @@ textarea { resize: vertical; min-height: 62px; }
   .topbar { padding: 0 12px; gap: 8px; }
   .user-chip { background: none; border: 0; padding: 0; }
   .user-chip .who { display: none; }
+  .wh-switch { padding-left: 6px; }
+  .wh-switch .wh-ico { display: none; }
   .btn-label { display: none; }
   .btn-icon-only { display: inline; }
   .content { padding: 12px; }

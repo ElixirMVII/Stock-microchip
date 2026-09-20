@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { esc, fmtInt, fmtMoney, fmtDate, table, loading, MONTH_FULL } from '../ui.js';
+import { whParam, whLabel } from '../app.js';
 
 /* ============================================================
  *  รายงาน — รวมถึงมุมมองรายเดือนแบบเดียวกับไฟล์ Excel เดิม
@@ -32,6 +33,7 @@ export async function renderReports(view) {
       <div class="fixed"><label class="small muted">เดือน</label>
         <select id="month">${MONTH_FULL.map((m, i) => `<option value="${i + 1}" ${i + 1 === s.month ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
       <div class="spacer"></div>
+      <span class="badge tone-primary">ขอบเขต: ${esc(whLabel())}</span>
       <a class="btn btn-sm" id="csv">⬇️ ส่งออก CSV</a>
       <button class="btn btn-sm" id="print">🖨️ พิมพ์</button>
     </div>
@@ -49,7 +51,7 @@ export async function renderReports(view) {
   const load = async () => {
     const box = view.querySelector('#body');
     box.innerHTML = loading();
-    const period = api.qs({ year: s.year, month: s.month });
+    const period = api.qs({ year: s.year, month: s.month, ...whParam() });
     const csv = view.querySelector('#csv');
     csv.style.display = '';
 
@@ -119,6 +121,7 @@ function monthlyView(d, s) {
       <div class="card-body tight">
         ${table(d.inbound, [
           { key: 'date', label: 'Receive Date', className: 'nowrap', render: (r) => fmtDate(r.date) },
+          { key: 'warehouse_code', label: 'คลัง', render: (r) => `<span class="badge tone-info">${esc(r.warehouse_code)}</span>` },
           { key: 'po_no', label: 'PO# No.', render: (r) => `<span class="mono">${esc(r.po_no || '—')}</span>` },
           { key: 'item_name', label: 'DESCRIPTION', render: (r) => `${esc(r.item_name)} <span class="muted small mono">${esc(r.sku)}</span>` },
           { key: 'qty', label: 'QTY', className: 'num', render: (r) => `<b>${fmtInt(r.qty)}</b> <span class="muted small">${esc(r.unit)}</span>` },
@@ -133,6 +136,7 @@ function monthlyView(d, s) {
       <div class="card-body tight">
         ${table(d.outbound, [
           { key: 'date', label: 'Date', className: 'nowrap', render: (r) => fmtDate(r.date) },
+          { key: 'warehouse_code', label: 'คลัง', render: (r) => `<span class="badge tone-info">${esc(r.warehouse_code)}</span>` },
           { key: 'name_dept', label: 'Name - Dept.', render: (r) => `<b>${esc(r.name_dept)}</b>` },
           { key: 'desktop', label: 'Desktop', render: (r) => cellList(r.desktop) },
           { key: 'laptop', label: 'Laptop', render: (r) => cellList(r.laptop) },

@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { lookup, can, clearLookups } from '../app.js';
+import { lookup, can, clearLookups, state } from '../app.js';
 import { esc, fmtInt, fmtMoney, table, pager, options, modal, toast, confirmDialog, loading } from '../ui.js';
 
 /* ============================================================
@@ -66,6 +66,29 @@ function tabDefs(ctx) {
           <div class="field">${checkbox('active', r.id ? r.active : true, 'เปิดใช้งาน')}</div>
         </div>`,
       lockedHint: (r) => r.total_in > 0 ? 'อุปกรณ์นี้มีความเคลื่อนไหวแล้ว ไม่ควรเปลี่ยนการติดตาม Serial' : '',
+    },
+
+    warehouses: {
+      label: '🏬 คลังสินค้า',
+      path: '/warehouses',
+      entity: 'คลังสินค้า',
+      searchPlaceholder: 'ค้นหารหัส ชื่อ หรือสถานที่',
+      columns: [
+        { key: 'code', label: 'รหัสคลัง', render: (r) => `<b class="mono">${esc(r.code)}</b>` },
+        { key: 'name', label: 'ชื่อคลัง', render: (r) => `<b>${esc(r.name)}</b>` },
+        { key: 'location', label: 'สถานที่ตั้ง', render: (r) => esc(r.location || '—') },
+        { key: 'sort_order', label: 'ลำดับ', className: 'num' },
+        { key: 'active', label: 'สถานะ', render: (r) => activeBadge(r.active) },
+      ],
+      form: (r = {}) => `
+        <div class="inline">
+          ${field('รหัสคลัง', text('code', r.code, 'required placeholder="เช่น MMT"'), { required: true, help: 'ใช้แสดงในตารางและรายงาน' })}
+          ${field('ลำดับการแสดง', text('sort_order', r.sort_order ?? 100, 'type="number" min="0"'))}
+        </div>
+        ${field('ชื่อคลัง', text('name', r.name, 'required placeholder="เช่น คลัง MMT"'), { required: true })}
+        ${field('สถานที่ตั้ง', text('location', r.location, 'placeholder="เช่น อาคาร A ชั้น 2"'))}
+        ${field('หมายเหตุ', text('note', r.note))}
+        <div class="field">${checkbox('active', r.id ? r.active : true, 'เปิดใช้งาน')}</div>`,
     },
 
     categories: {
@@ -238,6 +261,7 @@ export async function renderMaster(view) {
         close();
         toast(`บันทึก${d.entity}เรียบร้อยแล้ว`);
         clearLookups();
+        if (q.tab === 'warehouses') state.warehouses = await lookup('warehouses', true);
         await load();
       },
     });

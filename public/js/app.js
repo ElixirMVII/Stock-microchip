@@ -10,6 +10,18 @@ export const state = {
   user: null,
   /** ข้อมูลหลักที่ใช้ซ้ำหลายหน้า (โหลดครั้งเดียวแล้ว cache) */
   cache: {},
+  /** คลังที่กำลังดูอยู่ — null = ดูรวมทุกคลัง */
+  warehouseId: null,
+  warehouses: [],
+};
+
+/** พารามิเตอร์คลังสำหรับต่อท้าย query ของ API (ว่าง = รวมทุกคลัง) */
+export const whParam = () => (state.warehouseId ? { warehouse_id: state.warehouseId } : {});
+
+/** ชื่อคลังที่กำลังดู ใช้แสดงบนหัวข้อ */
+export const whLabel = () => {
+  const w = state.warehouses.find((x) => String(x.id) === String(state.warehouseId));
+  return w ? `คลัง ${w.code}` : 'ทุกคลังรวมกัน';
 };
 
 /** โหลดข้อมูลหลักแบบใช้ซ้ำ (บังคับโหลดใหม่ด้วย refresh = true) */
@@ -19,6 +31,7 @@ export async function lookup(name, refresh = false) {
     departments: '/departments?active=1&per_page=500',
     employees: '/employees?active=1&per_page=1000',
     isStaff: '/is-staff?active=1&per_page=500',
+    warehouses: '/warehouses?active=1&per_page=200',
     suppliers: '/suppliers?active=1&per_page=500',
     items: '/items?active=1&per_page=1000',
   };
@@ -45,6 +58,7 @@ const NAV = [
     { hash: '#/receipts', icon: '📥', label: 'รับอุปกรณ์เข้า' },
     { hash: '#/issues', icon: '📤', label: 'เบิกอุปกรณ์ออก' },
     { hash: '#/returns', icon: '↩️', label: 'รับคืนอุปกรณ์' },
+    { hash: '#/transfers', icon: '🔁', label: 'โอนย้ายระหว่างคลัง' },
     { hash: '#/adjustments', icon: '⚖️', label: 'ปรับปรุงสต็อก' },
   ] },
   { group: 'คลังสินค้า', items: [
@@ -91,6 +105,13 @@ function shell() {
         <button class="menu-toggle" id="menu-btn" aria-label="เมนู">☰</button>
         <div class="page-title" id="page-title">แดชบอร์ด</div>
         <div class="spacer"></div>
+        <label class="wh-switch" title="เลือกคลังที่ต้องการดู">
+          <span class="wh-ico">🏬</span>
+          <select id="wh-filter">
+            <option value="">ทุกคลัง (รวม)</option>
+            ${state.warehouses.map((w) => `<option value="${w.id}" ${String(w.id) === String(state.warehouseId) ? 'selected' : ''}>คลัง ${esc(w.code)}</option>`).join('')}
+          </select>
+        </label>
         <div class="user-chip">
           <span class="avatar">${esc(initials)}</span>
           <span class="who"><b>${esc(state.user.full_name)}</b> <span class="muted small">· ${esc(roleLabel)}</span></span>
@@ -180,7 +201,7 @@ async function renderRoute() {
 /** ป้ายจำนวนอุปกรณ์ใกล้หมดบนเมนู */
 export async function refreshLowBadge() {
   try {
-    const { total } = await api.get('/stock/low');
+    const { total } = await api.get('/stock/low'); // คิดจากยอดรวมทุกคลังเสมอ
     lowCount = total;
     document.querySelectorAll('[data-low]').forEach((b) => {
       b.textContent = total;
@@ -211,6 +232,13 @@ function changePasswordDialog() {
 }
 
 async function boot() {
+  // โหลดรายชื่อคลังก่อน เพราะตัวเลือกคลังอยู่บนแถบบนของทุกหน้า
+  try {
+    state.warehouses = await lookup('warehouses');
+    const saved = localStorage.getItem('hwstock-warehouse');
+    if (saved && state.warehouses.some((w) => String(w.id) === saved)) state.warehouseId = saved;
+  } catch { state.warehouses = []; }
+
   document.getElementById('root').innerHTML = shell();
 
   document.getElementById('logout-btn').addEventListener('click', async () => {
@@ -222,6 +250,11 @@ async function boot() {
   document.getElementById('pw-btn').addEventListener('click', changePasswordDialog);
   document.getElementById('menu-btn').addEventListener('click', () => {
     document.getElementById('sidebar').classList.toggle('open');
+  });
+  document.getElementById('wh-filter').addEventListener('change', (e) => {
+    state.warehouseId = e.target.value || null;
+    try { localStorage.setItem('hwstock-warehouse', state.warehouseId ?? ''); } catch { /* โหมดส่วนตัว */ }
+    renderRoute();
   });
   document.getElementById('theme-btn').addEventListener('click', () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';

@@ -23,6 +23,20 @@ CREATE TABLE IF NOT EXISTS users (
 -- ------------------------------------------------------------
 -- ข้อมูลหลัก (Master data)
 -- ------------------------------------------------------------
+-- ------------------------------------------------------------
+-- คลังสินค้า (รองรับหลายคลัง เช่น MMT และ MTHAI)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS warehouses (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  code       TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  name       TEXT    NOT NULL,
+  location   TEXT,
+  note       TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 100,
+  active     INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS categories (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   code       TEXT    NOT NULL UNIQUE COLLATE NOCASE,
@@ -109,6 +123,7 @@ CREATE TABLE IF NOT EXISTS serials (
   status         TEXT    NOT NULL DEFAULT 'in_stock'
                          CHECK (status IN ('in_stock', 'issued', 'scrapped')),
   holder_id      INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  warehouse_id   INTEGER NOT NULL DEFAULT 1 REFERENCES warehouses(id),
   receipt_id     INTEGER REFERENCES receipts(id) ON DELETE SET NULL,
   issued_at      TEXT,
   received_at    TEXT,
@@ -125,15 +140,17 @@ CREATE INDEX IF NOT EXISTS idx_serials_holder ON serials(holder_id);
 CREATE TABLE IF NOT EXISTS serial_events (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   serial_id     INTEGER NOT NULL REFERENCES serials(id) ON DELETE CASCADE,
-  doc_type      TEXT    NOT NULL CHECK (doc_type IN ('receipt', 'issue', 'return', 'adjustment')),
+  doc_type      TEXT    NOT NULL CHECK (doc_type IN ('receipt', 'issue', 'return', 'adjustment', 'transfer')),
   doc_id        INTEGER NOT NULL,
   doc_no        TEXT    NOT NULL,
   line_id       INTEGER,
-  event         TEXT    NOT NULL CHECK (event IN ('receive', 'issue', 'return', 'scrap')),
+  event         TEXT    NOT NULL CHECK (event IN ('receive', 'issue', 'return', 'scrap', 'transfer')),
   status_before TEXT,
   status_after  TEXT    NOT NULL,
   holder_before INTEGER,
   holder_after  INTEGER,
+  wh_before     INTEGER,
+  wh_after      INTEGER,
   event_date    TEXT    NOT NULL,
   reversed      INTEGER NOT NULL DEFAULT 0 CHECK (reversed IN (0, 1)),
   note          TEXT,
@@ -148,6 +165,7 @@ CREATE INDEX IF NOT EXISTS idx_serial_events_doc    ON serial_events(doc_type, d
 CREATE TABLE IF NOT EXISTS receipts (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   doc_no       TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  warehouse_id INTEGER NOT NULL DEFAULT 1 REFERENCES warehouses(id),
   receive_date TEXT    NOT NULL,
   po_no        TEXT,
   supplier_id  INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
@@ -178,6 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_receipt_lines_receipt ON receipt_lines(receipt_id
 CREATE TABLE IF NOT EXISTS issues (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   doc_no      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  warehouse_id INTEGER NOT NULL DEFAULT 1 REFERENCES warehouses(id),
   issue_date  TEXT    NOT NULL,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   is_staff_id INTEGER REFERENCES is_staff(id) ON DELETE SET NULL,
@@ -209,6 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_issue_lines_issue ON issue_lines(issue_id);
 CREATE TABLE IF NOT EXISTS returns (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   doc_no      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  warehouse_id INTEGER NOT NULL DEFAULT 1 REFERENCES warehouses(id),
   return_date TEXT    NOT NULL,
   employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   is_staff_id INTEGER REFERENCES is_staff(id) ON DELETE SET NULL,
@@ -239,6 +259,7 @@ CREATE INDEX IF NOT EXISTS idx_return_lines_return ON return_lines(return_id);
 CREATE TABLE IF NOT EXISTS adjustments (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   doc_no      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  warehouse_id INTEGER NOT NULL DEFAULT 1 REFERENCES warehouses(id),
   adjust_date TEXT    NOT NULL,
   reason      TEXT    NOT NULL DEFAULT 'count'
                       CHECK (reason IN ('count', 'damaged', 'lost', 'found', 'other')),
@@ -263,18 +284,49 @@ CREATE TABLE IF NOT EXISTS adjustment_lines (
 CREATE INDEX IF NOT EXISTS idx_adjustment_lines_adj ON adjustment_lines(adjustment_id);
 
 -- ------------------------------------------------------------
+-- เอกสารโอนย้ายระหว่างคลัง (TRANSFER)
+-- ตัดออกจากคลังต้นทาง และเพิ่มเข้าคลังปลายทางในเอกสารเดียว
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS transfers (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_no            TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  transfer_date     TEXT    NOT NULL,
+  from_warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+  to_warehouse_id   INTEGER NOT NULL REFERENCES warehouses(id),
+  note              TEXT,
+  status            TEXT    NOT NULL DEFAULT 'posted' CHECK (status IN ('posted', 'void')),
+  created_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+  voided_by         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  voided_at         TEXT,
+  void_reason       TEXT,
+  CHECK (from_warehouse_id <> to_warehouse_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transfers_date ON transfers(transfer_date);
+
+CREATE TABLE IF NOT EXISTS transfer_lines (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  transfer_id INTEGER NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+  item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+  qty         INTEGER NOT NULL CHECK (qty > 0),
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_transfer_lines_transfer ON transfer_lines(transfer_id);
+
+-- ------------------------------------------------------------
 -- บัญชีเดินสต็อก (ledger) - เป็นแหล่งข้อมูลจริงของยอดคงเหลือ
 -- qty เป็นค่าบวก/ลบ  ยอดคงเหลือ = SUM(qty) ต่อ item
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stock_moves (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  warehouse_id INTEGER NOT NULL DEFAULT 1 REFERENCES warehouses(id),
   serial_id  INTEGER REFERENCES serials(id) ON DELETE SET NULL,
   serial_no  TEXT,
   move_type  TEXT    NOT NULL
-                     CHECK (move_type IN ('IN', 'OUT', 'RETURN', 'ADJUST', 'VOID')),
+                     CHECK (move_type IN ('IN', 'OUT', 'RETURN', 'ADJUST', 'TRANSFER', 'VOID')),
   qty        INTEGER NOT NULL CHECK (qty <> 0),
-  doc_type   TEXT    NOT NULL CHECK (doc_type IN ('receipt', 'issue', 'return', 'adjustment')),
+  doc_type   TEXT    NOT NULL CHECK (doc_type IN ('receipt', 'issue', 'return', 'adjustment', 'transfer')),
   doc_id     INTEGER NOT NULL,
   doc_no     TEXT    NOT NULL,
   line_id    INTEGER,
@@ -306,35 +358,3 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 -- ------------------------------------------------------------
 -- มุมมองยอดคงเหลือ
 -- ------------------------------------------------------------
-DROP VIEW IF EXISTS v_stock_balance;
-CREATE VIEW v_stock_balance AS
-SELECT
-  i.id                                            AS id,
-  i.id                                            AS item_id,
-  i.sku                                           AS sku,
-  i.name                                          AS name,
-  i.brand                                         AS brand,
-  i.model                                         AS model,
-  i.unit                                          AS unit,
-  i.track_serial                                  AS track_serial,
-  i.min_qty                                       AS min_qty,
-  i.unit_cost                                     AS unit_cost,
-  i.location                                      AS location,
-  i.active                                        AS active,
-  c.id                                            AS category_id,
-  c.name                                          AS category_name,
-  c.kind                                          AS category_kind,
-  COALESCE(m.qty_in,  0)                          AS total_in,
-  COALESCE(m.qty_out, 0)                          AS total_out,
-  COALESCE(m.balance, 0)                          AS balance,
-  COALESCE(m.balance, 0) * i.unit_cost            AS stock_value
-FROM items i
-JOIN categories c ON c.id = i.category_id
-LEFT JOIN (
-  SELECT item_id,
-         SUM(CASE WHEN qty > 0 THEN qty ELSE 0 END)  AS qty_in,
-         SUM(CASE WHEN qty < 0 THEN -qty ELSE 0 END) AS qty_out,
-         SUM(qty)                                    AS balance
-  FROM stock_moves
-  GROUP BY item_id
-) m ON m.item_id = i.id;
