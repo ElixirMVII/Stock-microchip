@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import { forbidden, unauthorized } from './http.js';
+import { load } from '../config.js';
 
 const COOKIE = 'hwstock_session';
 const MAX_AGE_SEC = 60 * 60 * 12; // เซสชันมีอายุ 12 ชั่วโมง
 
-const secret = () => process.env.SESSION_SECRET || 'dev-insecure-secret-change-me';
+const secret = () => load().session.secret;
 
 /* ---------------- รหัสผ่าน ---------------- */
 
@@ -57,7 +58,7 @@ export function parseCookies(header = '') {
 }
 
 export function setSessionCookie(res, token) {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  const secure = load().server.https ? '; Secure' : '';
   res.setHeader('Set-Cookie', `${COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${MAX_AGE_SEC}${secure}`);
 }
 
@@ -69,13 +70,19 @@ export function clearSessionCookie(res) {
 
 /** อ่านผู้ใช้จากคุกกี้ใส่ไว้ใน req.user (ไม่บังคับเข้าสู่ระบบ) */
 export function attachUser(db) {
-  return (req, _res, next) => {
-    const token = parseCookies(req.headers.cookie).hwstock_session;
-    const id = readToken(token);
-    req.user = id
-      ? db.prepare('SELECT id, username, full_name, role, active FROM users WHERE id = ? AND active = 1').get(id) || null
-      : null;
-    next();
+  return async (req, _res, next) => {
+    try {
+      const token = parseCookies(req.headers.cookie).hwstock_session;
+      const id = readToken(token);
+      req.user = id
+        ? (await db.get(
+          'SELECT id, username, full_name, role, active FROM users WHERE id = @id AND active = 1', { id },
+        )) || null
+        : null;
+      next();
+    } catch (err) {
+      next(err);
+    }
   };
 }
 

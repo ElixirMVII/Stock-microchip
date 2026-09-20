@@ -13,7 +13,7 @@ export function masterRoutes(db) {
     table: 'warehouses',
     label: 'คลังสินค้า',
     searchCols: ['code', 'name', 'location'],
-    orderBy: 'sort_order, code COLLATE NOCASE',
+    orderBy: 'sort_order, code',
     references: [
       { table: 'stock_moves', column: 'warehouse_id', label: 'รายการเดินสต็อก' },
       { table: 'receipts', column: 'warehouse_id', label: 'ใบรับเข้า' },
@@ -35,7 +35,7 @@ export function masterRoutes(db) {
     table: 'categories',
     label: 'หมวดหมู่',
     searchCols: ['code', 'name'],
-    orderBy: 'sort_order, name COLLATE NOCASE',
+    orderBy: 'sort_order, name',
     references: [{ table: 'items', column: 'category_id', label: 'อุปกรณ์' }],
     parse: (b, { isUpdate }) => ({
       ...(isUpdate && b.code === undefined ? {} : { code: str(b.code, 'รหัสหมวดหมู่', { max: 30 }) }),
@@ -68,7 +68,7 @@ export function masterRoutes(db) {
     table: 'employees',
     label: 'พนักงาน',
     searchCols: ['emp_code', 'name', 'department_name'],
-    orderBy: 't.emp_code COLLATE NOCASE',
+    orderBy: 't.emp_code',
     selectSql: `
       SELECT e.*, d.name AS department_name, d.code AS department_code
       FROM employees e LEFT JOIN departments d ON d.id = e.department_id
@@ -128,7 +128,7 @@ export function masterRoutes(db) {
     table: 'items',
     label: 'อุปกรณ์',
     searchCols: ['sku', 'name', 'brand', 'model', 'category_name'],
-    orderBy: 't.name COLLATE NOCASE',
+    orderBy: 't.name',
     selectSql: 'SELECT * FROM v_stock_balance',
     references: [
       { table: 'receipt_lines', column: 'item_id', label: 'บรรทัดใบรับเข้า' },
@@ -153,10 +153,10 @@ export function masterRoutes(db) {
   });
 
   // Serial ทั้งหมดของอุปกรณ์หนึ่งรายการ
-  itemsRouter.get('/:id/serials', wrap((req, res) => {
+  itemsRouter.get('/:id/serials', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
     const status = req.query.status;
-    const rows = db.prepare(`
+    const rows = await db.all(`
       SELECT s.*, e.name AS holder_name, e.emp_code AS holder_code, d.name AS holder_dept,
              w.code AS warehouse_code, w.name AS warehouse_name
       FROM serials s
@@ -164,8 +164,8 @@ export function masterRoutes(db) {
       LEFT JOIN departments d ON d.id = e.department_id
       LEFT JOIN warehouses w ON w.id = s.warehouse_id
       WHERE s.item_id = @item_id ${status ? 'AND s.status = @status' : ''}
-      ORDER BY s.serial_no COLLATE NOCASE
-    `).all(status ? { item_id: id, status } : { item_id: id });
+      ORDER BY s.serial_no
+    `, status ? { item_id: id, status } : { item_id: id });
     res.json({ data: rows });
   }));
 
@@ -174,7 +174,7 @@ export function masterRoutes(db) {
   /* ---------------- Serial (ค้นหา / ไทม์ไลน์) ---------------- */
   const serials = Router();
 
-  serials.get('/', wrap((req, res) => {
+  serials.get('/', wrap(async (req, res) => {
     const where = [];
     const params = {};
     if (req.query.q) { where.push('(s.serial_no LIKE @q OR i.name LIKE @q OR i.sku LIKE @q OR e.name LIKE @q)'); params.q = `%${req.query.q}%`; }
@@ -190,42 +190,42 @@ export function masterRoutes(db) {
       LEFT JOIN departments d ON d.id = e.department_id
       LEFT JOIN warehouses w ON w.id = s.warehouse_id
       ${clause}`;
-    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n ${base}`, params)).n;
     const perPage = int(req.query.per_page, 'per_page', { required: false, def: 100, min: 1, max: 1000 });
     const page = int(req.query.page, 'page', { required: false, def: 1, min: 1 });
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT s.*, i.sku, i.name AS item_name, i.unit,
              e.name AS holder_name, e.emp_code AS holder_code, d.name AS holder_dept,
              w.code AS warehouse_code, w.name AS warehouse_name
       ${base}
-      ORDER BY s.status, s.serial_no COLLATE NOCASE
+      ORDER BY s.status, s.serial_no
       LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit: perPage, offset: (page - 1) * perPage });
+    `, { ...params, limit: perPage, offset: (page - 1) * perPage });
     res.json({ data, total, page, per_page: perPage });
   }));
 
-  serials.get('/:id', wrap((req, res) => {
+  serials.get('/:id', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const row = db.prepare(`
+    const row = await db.get(`
       SELECT s.*, i.sku, i.name AS item_name, e.name AS holder_name, e.emp_code AS holder_code,
              w.code AS warehouse_code, w.name AS warehouse_name
       FROM serials s JOIN items i ON i.id = s.item_id
       LEFT JOIN employees e ON e.id = s.holder_id
       LEFT JOIN warehouses w ON w.id = s.warehouse_id
       WHERE s.id = ?
-    `).get(id);
+    `, id);
     if (!row) throw notFound('ไม่พบ Serial ที่ระบุ');
-    res.json({ ...row, timeline: serialTimeline(db, id) });
+    res.json({ ...row, timeline: await serialTimeline(db, id) });
   }));
 
   // แก้ไขหมายเหตุ / ตัดจำหน่าย Serial ที่อยู่ในคลัง
-  serials.put('/:id', requireRole('officer'), wrap((req, res) => {
+  serials.put('/:id', requireRole('officer'), wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const row = db.prepare('SELECT * FROM serials WHERE id = ?').get(id);
+    const row = await db.get('SELECT * FROM serials WHERE id = ?', id);
     if (!row) throw notFound('ไม่พบ Serial ที่ระบุ');
     const note = req.body.note === undefined ? row.note : str(req.body.note, 'หมายเหตุ', { required: false, max: 500 });
-    db.prepare("UPDATE serials SET note = ?, updated_at = datetime('now') WHERE id = ?").run(note, id);
-    res.json(db.prepare('SELECT * FROM serials WHERE id = ?').get(id));
+    await db.run("UPDATE serials SET note = ?, updated_at = NOW() WHERE id = ?", [note, id]);
+    res.json(await db.get('SELECT * FROM serials WHERE id = ?', id));
   }));
 
   router.use('/serials', serials);

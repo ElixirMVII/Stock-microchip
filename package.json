@@ -1,7 +1,7 @@
 {
   "name": "hardware-stock-system",
   "version": "1.0.0",
-  "description": "ระบบจัดการสต็อกอุปกรณ์ไอที (Hardware Stock Management System) - รับเข้า / เบิกออก / คืน / ปรับปรุง / รายงาน",
+  "description": "ระบบจัดการสต็อกอุปกรณ์ไอที (Hardware Stock Management System) - MySQL, หลายคลัง, รับเข้า / เบิกออก / โอนย้าย / รายงาน",
   "type": "module",
   "main": "server/index.js",
   "engines": {
@@ -10,14 +10,15 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "setup": "node setup/install.js",
     "seed": "node server/seed.js",
     "seed:demo": "node server/seed.js --demo",
     "reset": "node server/seed.js --reset --demo",
     "test": "node --test \"tests/*.test.js\""
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
-    "express": "^5.2.1"
+    "express": "^5.1.0",
+    "mysql2": "^3.11.0"
   },
   "license": "MIT"
 }

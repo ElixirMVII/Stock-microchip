@@ -1,67 +1,91 @@
 /* ============================================================
- *  ปรับปรุงโครงสร้างฐานข้อมูลเดิมให้รองรับหลายคลัง
+ *  ปรับปรุงโครงสร้างฐานข้อมูลให้ทันสมัย (MySQL / MariaDB)
  *  ฐานข้อมูลที่สร้างใหม่จะได้โครงสร้างครบจาก schema.sql อยู่แล้ว
- *  ไฟล์นี้จึงทำงานเฉพาะกับฐานข้อมูลเก่าที่ยังไม่มีคอลัมน์ warehouse_id
+ *  ไฟล์นี้จึงทำงานเฉพาะส่วนที่ schema.sql ทำแทนไม่ได้ เช่น
+ *  การเติมคอลัมน์ให้ตารางเดิมที่มีข้อมูลอยู่แล้ว
  * ============================================================ */
 
-const hasColumn = (db, table, column) =>
-  db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+const hasColumn = async (db, table, column) =>
+  (await db.scalar(
+    `SELECT COUNT(*) FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t AND COLUMN_NAME = @c`,
+    { t: table, c: column },
+  )) > 0;
 
-const tableExists = (db, table) =>
-  !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+const hasTable = async (db, table) =>
+  (await db.scalar(
+    `SELECT COUNT(*) FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t`,
+    { t: table },
+  )) > 0;
+
+const hasIndex = async (db, table, index) =>
+  (await db.scalar(
+    `SELECT COUNT(*) FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t AND INDEX_NAME = @i`,
+    { t: table, i: index },
+  )) > 0;
 
 /** ตารางที่ต้องมี warehouse_id และค่าเริ่มต้นชี้ไปยังคลังแรก */
 const NEEDS_WAREHOUSE = ['stock_moves', 'serials', 'receipts', 'issues', 'returns', 'adjustments'];
 
-export function runMigrations(db) {
+export async function runMigrations(db) {
   const applied = [];
 
   // ---- คลังเริ่มต้น ต้องมีอย่างน้อยหนึ่งแห่งก่อน backfill ----
-  if (db.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n === 0) {
-    db.prepare("INSERT INTO warehouses (id, code, name, sort_order) VALUES (1, 'MMT', 'คลัง MMT', 10)").run();
-    db.prepare("INSERT INTO warehouses (code, name, sort_order) VALUES ('MTHAI', 'คลัง MTHAI', 20)").run();
+  if ((await db.scalar('SELECT COUNT(*) FROM warehouses')) === 0) {
+    await db.run("INSERT INTO warehouses (id, code, name, sort_order) VALUES (1, 'MMT', 'คลัง MMT', 10)");
+    await db.run("INSERT INTO warehouses (code, name, sort_order) VALUES ('MTHAI', 'คลัง MTHAI', 20)");
     applied.push('สร้างคลังเริ่มต้น MMT และ MTHAI');
   }
-  const defaultWh = db.prepare('SELECT id FROM warehouses ORDER BY sort_order, id LIMIT 1').get().id;
+  const defaultWh = await db.scalar('SELECT id FROM warehouses ORDER BY sort_order, id LIMIT 1');
 
-  // ---- เพิ่มคอลัมน์ warehouse_id ให้ตารางเดิม แล้วโอนข้อมูลเก่าเข้าคลังแรก ----
-  const missing = NEEDS_WAREHOUSE.filter((t) => tableExists(db, t) && !hasColumn(db, t, 'warehouse_id'));
-  if (missing.length) {
-    // SQLite ไม่ยอมให้เพิ่มคอลัมน์ที่มี REFERENCES พร้อมค่า default ขณะเปิด foreign key
-    db.pragma('foreign_keys = OFF');
-    db.transaction(() => {
-      for (const t of missing) {
-        db.exec(`ALTER TABLE ${t} ADD COLUMN warehouse_id INTEGER NOT NULL DEFAULT ${defaultWh} REFERENCES warehouses(id)`);
-      }
-    })();
-    db.pragma('foreign_keys = ON');
-    applied.push(`เพิ่มคอลัมน์ warehouse_id ให้ ${missing.join(', ')} (ข้อมูลเดิมเข้าคลังแรก)`);
+  // ---- เพิ่มคอลัมน์ warehouse_id ให้ตารางรุ่นเก่า แล้วโอนข้อมูลเดิมเข้าคลังแรก ----
+  for (const table of NEEDS_WAREHOUSE) {
+    if (!(await hasTable(db, table))) continue;
+    if (await hasColumn(db, table, 'warehouse_id')) continue;
+    await db.run(
+      `ALTER TABLE ${table} ADD COLUMN warehouse_id INT UNSIGNED NOT NULL DEFAULT ${Number(defaultWh)}`,
+    );
+    await db.run(
+      `ALTER TABLE ${table} ADD CONSTRAINT fk_${table}_wh FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)`,
+    );
+    applied.push(`เพิ่มคอลัมน์ warehouse_id ให้ ${table} (ข้อมูลเดิมเข้าคลังแรก)`);
   }
 
   // ---- คอลัมน์ติดตามคลังในประวัติ Serial ----
-  if (tableExists(db, 'serial_events')) {
+  if (await hasTable(db, 'serial_events')) {
     for (const col of ['wh_before', 'wh_after']) {
-      if (!hasColumn(db, 'serial_events', col)) {
-        db.exec(`ALTER TABLE serial_events ADD COLUMN ${col} INTEGER`);
+      if (!(await hasColumn(db, 'serial_events', col))) {
+        await db.run(`ALTER TABLE serial_events ADD COLUMN ${col} INT UNSIGNED NULL`);
         applied.push(`เพิ่มคอลัมน์ ${col} ให้ serial_events`);
       }
     }
   }
 
-  // ---- ข้อมูลเก่าที่คอลัมน์ว่างอยู่ (เผื่อกรณีเพิ่มคอลัมน์ไว้แล้วแต่ยังไม่ backfill) ----
-  for (const t of NEEDS_WAREHOUSE) {
-    if (tableExists(db, t) && hasColumn(db, t, 'warehouse_id')) {
-      const n = db.prepare(`UPDATE ${t} SET warehouse_id = ? WHERE warehouse_id IS NULL`).run(defaultWh).changes;
-      if (n) applied.push(`กำหนดคลังให้ข้อมูลเดิมในตาราง ${t} จำนวน ${n} แถว`);
-    }
+  // ---- ข้อมูลเก่าที่คอลัมน์ยังว่างอยู่ ----
+  for (const table of NEEDS_WAREHOUSE) {
+    if (!(await hasTable(db, table))) continue;
+    if (!(await hasColumn(db, table, 'warehouse_id'))) continue;
+    const { changes } = await db.run(
+      `UPDATE ${table} SET warehouse_id = @wh WHERE warehouse_id IS NULL`,
+      { wh: defaultWh },
+    );
+    if (changes) applied.push(`กำหนดคลังให้ข้อมูลเดิมในตาราง ${table} จำนวน ${changes} แถว`);
   }
 
   // ---- ดัชนีของคอลัมน์คลัง สร้างหลังคอลัมน์พร้อมแล้วเท่านั้น ----
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_serials_wh      ON serials(warehouse_id);
-    CREATE INDEX IF NOT EXISTS idx_moves_wh        ON stock_moves(warehouse_id);
-    CREATE INDEX IF NOT EXISTS idx_moves_item_wh   ON stock_moves(item_id, warehouse_id);
-  `);
+  const lateIndexes = [
+    ['serials', 'idx_serials_wh', 'warehouse_id'],
+    ['stock_moves', 'idx_moves_wh', 'warehouse_id'],
+    ['stock_moves', 'idx_moves_item_wh', 'item_id, warehouse_id'],
+  ];
+  for (const [table, index, cols] of lateIndexes) {
+    if (!(await hasTable(db, table))) continue;
+    if (await hasIndex(db, table, index)) continue;
+    await db.run(`CREATE INDEX ${index} ON ${table} (${cols})`);
+    applied.push(`สร้างดัชนี ${index}`);
+  }
 
   if (applied.length) {
     console.log('ปรับปรุงฐานข้อมูล:');

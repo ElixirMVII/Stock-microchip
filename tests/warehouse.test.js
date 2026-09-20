@@ -1,179 +1,177 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   balanceOf, postAdjustment, postIssue, postReceipt, postReturn, postTransfer, voidDocument,
 } from '../server/services/stock.js';
-import { ITEM, EMP, WH, startServer, testDb } from './helpers.js';
+import { ITEM, EMP, WH, startServer, testDb, disconnect } from './helpers.js';
 
-const run = (db, fn) => db.transaction(fn)();
+after(disconnect);
+
+const fresh = () => testDb(import.meta.url);
+const tx = (db, fn) => db.tx(fn);
 
 /* ---------------- ยอดแยกรายคลัง / รวมทุกคลัง ---------------- */
 
-test('ระบบสร้างคลัง MMT และ MTHAI ให้อัตโนมัติ', () => {
-  const db = testDb();
-  const rows = db.prepare('SELECT code FROM warehouses ORDER BY sort_order, id').all();
+test('ระบบสร้างคลัง MMT และ MTHAI ให้อัตโนมัติ', async () => {
+  const db = await fresh();
+  const rows = await db.all('SELECT code FROM warehouses ORDER BY sort_order, id');
   assert.deepEqual(rows.map((r) => r.code), ['MMT', 'MTHAI']);
 });
 
-test('ยอดคงเหลือแยกรายคลังและยอดรวมถูกต้อง', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 30 }] }));
-  run(db, () => postReceipt(db, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 12 }] }));
+test('ยอดคงเหลือแยกรายคลังและยอดรวมถูกต้อง', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 30 }] }));
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 12 }] }));
 
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mmt), 30);
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 12);
-  assert.equal(balanceOf(db, ITEM.mouse), 42, 'ไม่ระบุคลัง = ยอดรวมทุกคลัง');
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mmt), 30);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 12);
+  assert.equal(await balanceOf(db, ITEM.mouse), 42, 'ไม่ระบุคลัง = ยอดรวมทุกคลัง');
 
-  const wh = db.prepare('SELECT warehouse_code, balance FROM v_stock_balance_wh WHERE item_id = ? ORDER BY warehouse_id').all(ITEM.mouse);
+  const wh = await db.all('SELECT warehouse_code, balance FROM v_stock_balance_wh WHERE item_id = ? ORDER BY warehouse_id', ITEM.mouse);
   assert.deepEqual(wh.map((r) => [r.warehouse_code, r.balance]), [['MMT', 30], ['MTHAI', 12]]);
-  assert.equal(db.prepare('SELECT balance FROM v_stock_balance WHERE item_id = ?').get(ITEM.mouse).balance, 42);
+  assert.equal((await db.get('SELECT balance FROM v_stock_balance WHERE item_id = ?', [ITEM.mouse])).balance, 42);
 });
 
-test('เบิกจากคลังหนึ่งไม่กระทบอีกคลัง', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 20 }] }));
-  run(db, () => postReceipt(db, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 8 }] }));
-  run(db, () => postIssue(db, { warehouse_id: WH.mthai, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.mouse, qty: 5 }] }));
+test('เบิกจากคลังหนึ่งไม่กระทบอีกคลัง', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 20 }] }));
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 8 }] }));
+  await tx(db, (t) => postIssue(t, { warehouse_id: WH.mthai, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.mouse, qty: 5 }] }));
 
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mmt), 20, 'คลังที่ไม่เกี่ยวข้องต้องไม่เปลี่ยน');
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 3);
-  assert.equal(balanceOf(db, ITEM.mouse), 23);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mmt), 20, 'คลังที่ไม่เกี่ยวข้องต้องไม่เปลี่ยน');
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 3);
+  assert.equal(await balanceOf(db, ITEM.mouse), 23);
 });
 
-test('เบิกเกินยอดของคลังนั้นไม่ได้ แม้ยอดรวมทุกคลังจะพอ', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 50 }] }));
-  run(db, () => postReceipt(db, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 3 }] }));
+test('เบิกเกินยอดของคลังนั้นไม่ได้ แม้ยอดรวมทุกคลังจะพอ', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 50 }] }));
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 3 }] }));
 
-  assert.throws(
-    () => run(db, () => postIssue(db, { warehouse_id: WH.mthai, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.mouse, qty: 10 }] })),
-    /คลัง MTHAI/,
-  );
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 3, 'ต้อง rollback');
+  await assert.rejects(tx(db, (t) => postIssue(t, { warehouse_id: WH.mthai, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.mouse, qty: 10 }] })), /คลัง MTHAI/);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 3, 'ต้อง rollback');
 });
 
-test('ปรับปรุงสต็อกมีผลเฉพาะคลังที่ระบุ', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] }));
-  run(db, () => postReceipt(db, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] }));
-  run(db, () => postAdjustment(db, { warehouse_id: WH.mmt, adjust_date: '2026-09-05', lines: [{ item_id: ITEM.mouse, qty_diff: -4 }] }));
+test('ปรับปรุงสต็อกมีผลเฉพาะคลังที่ระบุ', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] }));
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] }));
+  await tx(db, (t) => postAdjustment(t, { warehouse_id: WH.mmt, adjust_date: '2026-09-05', lines: [{ item_id: ITEM.mouse, qty_diff: -4 }] }));
 
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mmt), 6);
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 10);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mmt), 6);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 10);
 });
 
 /* ---------------- Serial ผูกกับคลัง ---------------- */
 
-test('serial อยู่ในคลังที่รับเข้า และเบิกข้ามคลังไม่ได้', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['A1'] }] }));
-  run(db, () => postReceipt(db, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['B1'] }] }));
+test('serial อยู่ในคลังที่รับเข้า และเบิกข้ามคลังไม่ได้', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['A1'] }] }));
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mthai, receive_date: '2026-09-01', lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['B1'] }] }));
 
-  assert.equal(db.prepare("SELECT warehouse_id FROM serials WHERE serial_no='A1'").get().warehouse_id, WH.mmt);
-  assert.throws(
-    () => run(db, () => postIssue(db, { warehouse_id: WH.mthai, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['A1'] }] })),
-    /อยู่ที่คลัง MMT/,
-  );
+  assert.equal((await db.get("SELECT warehouse_id FROM serials WHERE serial_no='A1'")).warehouse_id, WH.mmt);
+  await assert.rejects(tx(db, (t) => postIssue(t, { warehouse_id: WH.mthai, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['A1'] }] })), /อยู่ที่คลัง MMT/);
 });
 
 /* ---------------- การโอนย้ายระหว่างคลัง ---------------- */
 
-test('โอนย้ายลดคลังต้นทาง เพิ่มคลังปลายทาง และยอดรวมไม่เปลี่ยน', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 20 }] }));
-  const before = balanceOf(db, ITEM.mouse);
+test('โอนย้ายลดคลังต้นทาง เพิ่มคลังปลายทาง และยอดรวมไม่เปลี่ยน', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 20 }] }));
+  const before = await balanceOf(db, ITEM.mouse);
 
-  const tr = run(db, () => postTransfer(db, {
+  const tr = await tx(db, (t) => postTransfer(t, {
     transfer_date: '2026-09-05', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mthai,
     lines: [{ item_id: ITEM.mouse, qty: 7 }],
   }));
   assert.match(tr.doc_no, /^TR-2026-0001$/);
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mmt), 13);
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 7);
-  assert.equal(balanceOf(db, ITEM.mouse), before, 'ยอดรวมทุกคลังต้องเท่าเดิม');
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mmt), 13);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 7);
+  assert.equal(await balanceOf(db, ITEM.mouse), before, 'ยอดรวมทุกคลังต้องเท่าเดิม');
 });
 
-test('โอนย้าย serial ทำให้ serial เปลี่ยนคลัง และเบิกจากคลังใหม่ได้', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] }] }));
-  run(db, () => postTransfer(db, {
+test('โอนย้าย serial ทำให้ serial เปลี่ยนคลัง และเบิกจากคลังใหม่ได้', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] }] }));
+  await tx(db, (t) => postTransfer(t, {
     transfer_date: '2026-09-05', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mthai,
     lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] }],
   }));
-  assert.equal(db.prepare("SELECT warehouse_id FROM serials WHERE serial_no='LT-9'").get().warehouse_id, WH.mthai);
-  assert.equal(balanceOf(db, ITEM.laptop, WH.mmt), 0);
-  assert.equal(balanceOf(db, ITEM.laptop, WH.mthai), 1);
+  assert.equal((await db.get("SELECT warehouse_id FROM serials WHERE serial_no='LT-9'")).warehouse_id, WH.mthai);
+  assert.equal(await balanceOf(db, ITEM.laptop, WH.mmt), 0);
+  assert.equal(await balanceOf(db, ITEM.laptop, WH.mthai), 1);
 
   // เบิกจากคลังปลายทางได้แล้ว
-  run(db, () => postIssue(db, { warehouse_id: WH.mthai, issue_date: '2026-09-06', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] }] }));
-  assert.equal(db.prepare("SELECT status FROM serials WHERE serial_no='LT-9'").get().status, 'issued');
+  await tx(db, (t) => postIssue(t, { warehouse_id: WH.mthai, issue_date: '2026-09-06', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-9'] }] }));
+  assert.equal((await db.get("SELECT status FROM serials WHERE serial_no='LT-9'")).status, 'issued');
 });
 
-test('โอนเกินยอดคลังต้นทาง และโอนเข้าคลังเดียวกันต้องถูกปฏิเสธ', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 5 }] }));
+test('โอนเกินยอดคลังต้นทาง และโอนเข้าคลังเดียวกันต้องถูกปฏิเสธ', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 5 }] }));
 
-  assert.throws(() => run(db, () => postTransfer(db, {
+  await assert.rejects(tx(db, (t) => postTransfer(t, {
     transfer_date: '2026-09-05', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mthai,
     lines: [{ item_id: ITEM.mouse, qty: 99 }],
   })), /สต็อกไม่พอ/);
 
-  assert.throws(() => run(db, () => postTransfer(db, {
+  await assert.rejects(tx(db, (t) => postTransfer(t, {
     transfer_date: '2026-09-05', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mmt,
     lines: [{ item_id: ITEM.mouse, qty: 1 }],
   })), /คลังเดียวกัน/);
 
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mmt), 5);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mmt), 5);
 });
 
-test('ยกเลิกใบโอนย้ายคืนยอดให้ทั้งสองคลัง และย้อนคลังของ serial', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [
+test('ยกเลิกใบโอนย้ายคืนยอดให้ทั้งสองคลัง และย้อนคลังของ serial', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [
     { item_id: ITEM.mouse, qty: 10 },
     { item_id: ITEM.laptop, qty: 1, serials: ['LT-V'] },
   ] }));
-  const tr = run(db, () => postTransfer(db, {
+  const tr = await tx(db, (t) => postTransfer(t, {
     transfer_date: '2026-09-05', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mthai,
     lines: [{ item_id: ITEM.mouse, qty: 4 }, { item_id: ITEM.laptop, qty: 1, serials: ['LT-V'] }],
   }));
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 4);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 4);
 
-  run(db, () => voidDocument(db, 'transfer', tr.id, 'คีย์ผิด'));
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mmt), 10);
-  assert.equal(balanceOf(db, ITEM.mouse, WH.mthai), 0);
-  assert.equal(db.prepare("SELECT warehouse_id FROM serials WHERE serial_no='LT-V'").get().warehouse_id, WH.mmt);
-  assert.equal(db.prepare('SELECT status FROM transfers WHERE id = ?').get(tr.id).status, 'void');
+  await tx(db, (t) => voidDocument(t, 'transfer', tr.id, 'คีย์ผิด'));
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mmt), 10);
+  assert.equal(await balanceOf(db, ITEM.mouse, WH.mthai), 0);
+  assert.equal((await db.get("SELECT warehouse_id FROM serials WHERE serial_no='LT-V'")).warehouse_id, WH.mmt);
+  assert.equal((await db.get('SELECT status FROM transfers WHERE id = ?', [tr.id])).status, 'void');
 });
 
-test('คืนของเข้าคลังอื่นได้ และของย้ายไปอยู่คลังที่รับคืน', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-R'] }] }));
-  run(db, () => postIssue(db, { warehouse_id: WH.mmt, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-R'] }] }));
-  run(db, () => postReturn(db, { warehouse_id: WH.mthai, return_date: '2026-09-10', employee_id: EMP.tanakit, lines: [{ item_id: ITEM.laptop, qty: 1, condition: 'good', serials: ['LT-R'] }] }));
+test('คืนของเข้าคลังอื่นได้ และของย้ายไปอยู่คลังที่รับคืน', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-R'] }] }));
+  await tx(db, (t) => postIssue(t, { warehouse_id: WH.mmt, issue_date: '2026-09-02', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.laptop, qty: 1, serials: ['LT-R'] }] }));
+  await tx(db, (t) => postReturn(t, { warehouse_id: WH.mthai, return_date: '2026-09-10', employee_id: EMP.tanakit, lines: [{ item_id: ITEM.laptop, qty: 1, condition: 'good', serials: ['LT-R'] }] }));
 
-  assert.equal(db.prepare("SELECT warehouse_id FROM serials WHERE serial_no='LT-R'").get().warehouse_id, WH.mthai);
-  assert.equal(balanceOf(db, ITEM.laptop, WH.mmt), 0);
-  assert.equal(balanceOf(db, ITEM.laptop, WH.mthai), 1);
+  assert.equal((await db.get("SELECT warehouse_id FROM serials WHERE serial_no='LT-R'")).warehouse_id, WH.mthai);
+  assert.equal(await balanceOf(db, ITEM.laptop, WH.mmt), 0);
+  assert.equal(await balanceOf(db, ITEM.laptop, WH.mthai), 1);
 });
 
-test('ยอดรายคลังของอุปกรณ์ที่ติดตาม serial เท่ากับจำนวน serial ในคลังนั้นเสมอ', () => {
-  const db = testDb();
-  run(db, () => postReceipt(db, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.monitor, qty: 3, serials: ['S1', 'S2', 'S3'] }] }));
-  run(db, () => postTransfer(db, { transfer_date: '2026-09-02', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mthai, lines: [{ item_id: ITEM.monitor, qty: 2, serials: ['S1', 'S2'] }] }));
-  run(db, () => postIssue(db, { warehouse_id: WH.mthai, issue_date: '2026-09-03', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['S1'] }] }));
+test('ยอดรายคลังของอุปกรณ์ที่ติดตาม serial เท่ากับจำนวน serial ในคลังนั้นเสมอ', async () => {
+  const db = await fresh();
+  await tx(db, (t) => postReceipt(t, { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.monitor, qty: 3, serials: ['S1', 'S2', 'S3'] }] }));
+  await tx(db, (t) => postTransfer(t, { transfer_date: '2026-09-02', from_warehouse_id: WH.mmt, to_warehouse_id: WH.mthai, lines: [{ item_id: ITEM.monitor, qty: 2, serials: ['S1', 'S2'] }] }));
+  await tx(db, (t) => postIssue(t, { warehouse_id: WH.mthai, issue_date: '2026-09-03', employee_id: EMP.tanakit, charge: true, lines: [{ item_id: ITEM.monitor, qty: 1, serials: ['S1'] }] }));
 
   for (const whId of [WH.mmt, WH.mthai]) {
-    const inStock = db.prepare(
-      "SELECT COUNT(*) AS n FROM serials WHERE item_id = ? AND warehouse_id = ? AND status = 'in_stock'",
-    ).get(ITEM.monitor, whId).n;
-    assert.equal(balanceOf(db, ITEM.monitor, whId), inStock, `คลัง #${whId} ยอดต้องตรงกับจำนวน serial`);
+    const inStock = Number(await db.scalar(
+      "SELECT COUNT(*) FROM serials WHERE item_id = ? AND warehouse_id = ? AND status = 'in_stock'",
+      [ITEM.monitor, whId],
+    ));
+    assert.equal(await balanceOf(db, ITEM.monitor, whId), inStock, `คลัง #${whId} ยอดต้องตรงกับจำนวน serial`);
   }
 });
 
 /* ---------------- API ---------------- */
 
 test('API: ดูยอดแยกรายคลังและยอดรวมผ่าน /stock/by-warehouse', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -193,7 +191,7 @@ test('API: ดูยอดแยกรายคลังและยอดรว
 });
 
 test('API: /stock/balance กรองรายคลังได้ และไม่กรอง = รวมทุกคลัง', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 30 }] });
@@ -205,7 +203,7 @@ test('API: /stock/balance กรองรายคลังได้ และ�
 });
 
 test('API: สร้างและยกเลิกใบโอนย้ายผ่าน HTTP', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 20 }] });
@@ -230,7 +228,7 @@ test('API: สร้างและยกเลิกใบโอนย้าย
 });
 
 test('API: เอกสารต้องระบุคลัง มิฉะนั้นได้ 400', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   const res = await s.post('/api/receipts', { receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 1 }] });
@@ -239,7 +237,7 @@ test('API: เอกสารต้องระบุคลัง มิฉะ�
 });
 
 test('API: รายการเอกสารกรองตามคลังได้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 5 }] });
@@ -252,7 +250,7 @@ test('API: รายการเอกสารกรองตามคลัง
 });
 
 test('API: แดชบอร์ดมีสรุปแยกรายคลังพร้อมยอดรวม', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-09-01', lines: [{ item_id: ITEM.mouse, qty: 10, unit_cost: 350 }] });
@@ -267,7 +265,7 @@ test('API: แดชบอร์ดมีสรุปแยกรายคลั
 });
 
 test('API: จัดการคลังเป็นข้อมูลหลักได้ และลบคลังที่ใช้งานอยู่ไม่ได้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
