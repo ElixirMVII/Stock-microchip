@@ -1,0 +1,61 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express from 'express';
+import { attachUser, requireRole } from './lib/auth.js';
+import { HttpError } from './lib/http.js';
+import { authRoutes, userRoutes } from './routes/auth.js';
+import { masterRoutes } from './routes/master.js';
+import { documentRoutes } from './routes/documents.js';
+import { stockRoutes } from './routes/stock.js';
+import { dashboardRoutes, reportRoutes } from './routes/reports.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+
+export function createApp(db, { requireLogin = true } = {}) {
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '2mb' }));
+  app.use(attachUser(db));
+
+  // ป้องกัน API ทั้งหมดด้วยการเข้าสู่ระบบ ยกเว้น endpoint ของการยืนยันตัวตน
+  const guard = requireLogin ? requireRole('viewer') : (_req, _res, next) => next();
+
+  app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+  app.use('/api/auth', authRoutes(db));
+  app.use('/api/users', guard, userRoutes(db));
+  app.use('/api', guard, masterRoutes(db));
+  app.use('/api', guard, documentRoutes(db));
+  app.use('/api/stock', guard, stockRoutes(db));
+  app.use('/api/reports', guard, reportRoutes(db));
+  app.use('/api/dashboard', guard, dashboardRoutes(db));
+
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'ไม่พบ API ที่เรียก' }));
+
+  // หน้าเว็บ (SPA)
+  app.use(express.static(PUBLIC_DIR, { index: 'index.html', extensions: ['html'] }));
+  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+
+  // จัดการข้อผิดพลาดทั้งหมดให้เป็น JSON ภาษาไทย
+  app.use((err, _req, res, _next) => {
+    if (err instanceof HttpError) {
+      return res.status(err.status).json({ error: err.message, details: err.details });
+    }
+    if (err?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'ข้อมูลซ้ำกับที่มีอยู่ในระบบแล้ว (รหัสหรือชื่อต้องไม่ซ้ำ)' });
+    }
+    if (err?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+      return res.status(409).json({ error: 'ข้อมูลนี้ถูกอ้างอิงอยู่ที่อื่น หรืออ้างอิงไปยังข้อมูลที่ไม่มีอยู่จริง' });
+    }
+    if (err?.code?.startsWith?.('SQLITE_CONSTRAINT')) {
+      return res.status(400).json({ error: 'ข้อมูลไม่ผ่านเงื่อนไขของฐานข้อมูล กรุณาตรวจสอบค่าที่กรอก' });
+    }
+    if (err?.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'รูปแบบข้อมูล JSON ไม่ถูกต้อง' });
+    }
+    console.error('[error]', err);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาดภายในระบบ' });
+  });
+
+  return app;
+}
