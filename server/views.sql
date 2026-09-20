@@ -1,14 +1,11 @@
 -- ============================================================
---  มุมมองยอดคงเหลือ
+--  มุมมองยอดคงเหลือ (MySQL / MariaDB)
 --  แยกไว้คนละไฟล์กับตาราง เพราะต้องสร้างหลังการ migrate เสร็จแล้ว
 --  (view อ้างถึงคอลัมน์ที่ migration เป็นคนเพิ่มให้ฐานข้อมูลเก่า)
 -- ============================================================
 
-DROP VIEW IF EXISTS v_stock_balance;
-DROP VIEW IF EXISTS v_stock_balance_wh;
-
 -- ยอดคงเหลือ "แยกรายคลัง" — ทุกคู่ (อุปกรณ์ × คลัง) แม้ยังไม่เคยมีของ
-CREATE VIEW v_stock_balance_wh AS
+CREATE OR REPLACE VIEW v_stock_balance_wh AS
 SELECT
   i.id                                  AS item_id,
   w.id                                  AS warehouse_id,
@@ -36,7 +33,7 @@ LEFT JOIN (
 ) m ON m.item_id = i.id AND m.warehouse_id = w.id;
 
 -- ยอดคงเหลือ "รวมทุกคลัง"
-CREATE VIEW v_stock_balance AS
+CREATE OR REPLACE VIEW v_stock_balance AS
 SELECT
   i.id                                            AS id,
   i.id                                            AS item_id,

@@ -1,12 +1,16 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { hashPassword } from '../server/lib/auth.js';
-import { ITEM, EMP, WH, startServer, testDb } from './helpers.js';
+import { ITEM, EMP, WH, startServer, testDb, disconnect } from './helpers.js';
+
+after(disconnect);
+
+const fresh = () => testDb(import.meta.url);
 
 /* ---------------- การยืนยันตัวตนและสิทธิ์ ---------------- */
 
 test('API ต้องเข้าสู่ระบบก่อนจึงเรียกได้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   assert.equal((await s.get('/api/items')).status, 401);
   assert.equal((await s.get('/api/stock/balance')).status, 401);
@@ -14,7 +18,7 @@ test('API ต้องเข้าสู่ระบบก่อนจึงเ�
 });
 
 test('เข้าสู่ระบบสำเร็จและอ่านข้อมูลตัวเองได้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   const login = await s.login();
   assert.equal(login.status, 200);
@@ -24,7 +28,7 @@ test('เข้าสู่ระบบสำเร็จและอ่าน�
 });
 
 test('รหัสผ่านผิดต้องได้ 401 และไม่หลุดข้อมูลผู้ใช้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   const res = await s.login('admin', 'ผิดแน่นอน');
   assert.equal(res.status, 401);
@@ -32,9 +36,11 @@ test('รหัสผ่านผิดต้องได้ 401 และไม
 });
 
 test('สิทธิ์ viewer ดูได้อย่างเดียว บันทึกเอกสารไม่ได้', async (t) => {
-  const db = testDb();
-  db.prepare("INSERT INTO users (username, password_hash, full_name, role) VALUES ('view1', ?, 'ผู้ดู', 'viewer')")
-    .run(hashPassword('viewer1234'));
+  const db = await fresh();
+  await db.run(
+    "INSERT INTO users (username, password_hash, full_name, role) VALUES ('view1', ?, 'ผู้ดู', 'viewer')",
+    hashPassword('viewer1234'),
+  );
   const s = await startServer(db);
   t.after(() => s.close());
 
@@ -46,9 +52,11 @@ test('สิทธิ์ viewer ดูได้อย่างเดียว �
 });
 
 test('สิทธิ์ officer บันทึกเอกสารได้ แต่จัดการผู้ใช้ไม่ได้', async (t) => {
-  const db = testDb();
-  db.prepare("INSERT INTO users (username, password_hash, full_name, role) VALUES ('off1', ?, 'เจ้าหน้าที่', 'officer')")
-    .run(hashPassword('officer1234'));
+  const db = await fresh();
+  await db.run(
+    "INSERT INTO users (username, password_hash, full_name, role) VALUES ('off1', ?, 'เจ้าหน้าที่', 'officer')",
+    hashPassword('officer1234'),
+  );
   const s = await startServer(db);
   t.after(() => s.close());
 
@@ -62,7 +70,7 @@ test('สิทธิ์ officer บันทึกเอกสารได้ �
 /* ---------------- ข้อมูลหลัก ---------------- */
 
 test('เพิ่ม/แก้ไข/ลบอุปกรณ์ผ่าน API ได้ครบวงจร', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -80,7 +88,7 @@ test('เพิ่ม/แก้ไข/ลบอุปกรณ์ผ่าน AP
 });
 
 test('รหัสอุปกรณ์ซ้ำต้องได้ 409 พร้อมข้อความภาษาไทย', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   const res = await s.post('/api/items', { sku: 'MOUSE', name: 'ซ้ำ', category_id: 4 });
@@ -89,7 +97,7 @@ test('รหัสอุปกรณ์ซ้ำต้องได้ 409 พร
 });
 
 test('ลบข้อมูลหลักที่ถูกอ้างอิงอยู่ต้องได้ 409 พร้อมคำแนะนำ', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   const res = await s.del('/api/categories/4');
@@ -98,7 +106,7 @@ test('ลบข้อมูลหลักที่ถูกอ้างอิ�
 });
 
 test('ค้นหาและแบ่งหน้าข้อมูลหลักได้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   const found = await s.get('/api/items?q=Mouse');
@@ -112,7 +120,7 @@ test('ค้นหาและแบ่งหน้าข้อมูลหล�
 /* ---------------- เอกสารรับเข้า / เบิกออก ---------------- */
 
 test('บันทึกใบรับเข้าแล้วยอดคงเหลือเปลี่ยนตาม', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -132,7 +140,7 @@ test('บันทึกใบรับเข้าแล้วยอดคง�
 });
 
 test('บันทึกใบเบิกพร้อม serial และดูรายละเอียดได้', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -152,7 +160,7 @@ test('บันทึกใบเบิกพร้อม serial และดู
 });
 
 test('เบิกเกินสต็อกผ่าน API ต้องได้ 409 และไม่บันทึกเอกสาร', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 2 }] });
@@ -168,7 +176,7 @@ test('เบิกเกินสต็อกผ่าน API ต้องได
 });
 
 test('ยกเลิกเอกสารผ่าน API คืนยอดและเปลี่ยนสถานะ', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -184,7 +192,7 @@ test('ยกเลิกเอกสารผ่าน API คืนยอดแ
 });
 
 test('ข้อมูลไม่ครบหรือรูปแบบผิดต้องได้ 400 พร้อมข้อความภาษาไทย', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -204,7 +212,7 @@ test('ข้อมูลไม่ครบหรือรูปแบบผิ�
 /* ---------------- คลังและรายงาน ---------------- */
 
 test('รายงานรายเดือนจัดกลุ่มคอลัมน์ตามหมวดหมู่เหมือนไฟล์เดิม', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -233,7 +241,7 @@ test('รายงานรายเดือนจัดกลุ่มคอ�
 });
 
 test('รายงานอุปกรณ์ใกล้หมดและทรัพย์สินที่พนักงานถือครอง', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -255,7 +263,7 @@ test('รายงานอุปกรณ์ใกล้หมดและท�
 });
 
 test('ไทม์ไลน์ของ serial บันทึกครบทุกขั้นตอน', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -270,7 +278,7 @@ test('ไทม์ไลน์ของ serial บันทึกครบทุ
 });
 
 test('การ์ดสต็อกแสดงยอดสะสมถูกต้อง', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10 }] });
@@ -283,7 +291,7 @@ test('การ์ดสต็อกแสดงยอดสะสมถูก�
 });
 
 test('ส่งออก CSV ได้พร้อม BOM สำหรับ Excel ภาษาไทย', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 6 }] });
@@ -301,7 +309,7 @@ test('ส่งออก CSV ได้พร้อม BOM สำหรับ Exc
 });
 
 test('แดชบอร์ดรวมยอดได้ถูกต้อง', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
   await s.post('/api/receipts', { warehouse_id: WH.mmt, receive_date: '2026-08-01', lines: [{ item_id: ITEM.mouse, qty: 10, unit_cost: 350 }] });
@@ -316,7 +324,7 @@ test('แดชบอร์ดรวมยอดได้ถูกต้อง',
 /* ---------------- ผู้ใช้งาน ---------------- */
 
 test('admin จัดการผู้ใช้ได้ และห้ามเหลือ admin ศูนย์คน', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 
@@ -331,7 +339,7 @@ test('admin จัดการผู้ใช้ได้ และห้าม�
 });
 
 test('เปลี่ยนรหัสผ่านแล้วต้องใช้รหัสใหม่เข้าสู่ระบบ', async (t) => {
-  const s = await startServer();
+  const s = await startServer(await fresh());
   t.after(() => s.close());
   await s.login();
 

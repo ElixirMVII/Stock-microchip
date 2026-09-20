@@ -26,44 +26,44 @@ export function stockRoutes(db) {
     if (req.query.in_stock === '1') where.push('balance > 0');
 
     const sortMap = {
-      name: 'name COLLATE NOCASE',
-      sku: 'sku COLLATE NOCASE',
+      name: 'name',
+      sku: 'sku',
       balance: 'balance DESC',
       value: 'stock_value DESC',
-      category: 'category_name COLLATE NOCASE, name COLLATE NOCASE',
+      category: 'category_name, name',
     };
     const order = sortMap[req.query.sort] || sortMap.name;
     return { clause: `WHERE ${where.join(' AND ')}`, params, order, source, whId };
   };
 
-  router.get('/balance', wrap((req, res) => {
+  router.get('/balance', wrap(async (req, res) => {
     const { clause, params, order, source, whId } = balanceQuery(req);
-    const total = db.prepare(`SELECT COUNT(*) AS n FROM ${source} ${clause}`).get(params).n;
-    const summary = db.prepare(`
+    const total = (await db.get(`SELECT COUNT(*) AS n FROM ${source} ${clause}`, params)).n;
+    const summary = await db.get(`
       SELECT COALESCE(SUM(balance), 0) AS total_qty,
              COALESCE(SUM(stock_value), 0) AS total_value,
              SUM(CASE WHEN min_qty > 0 AND balance <= min_qty THEN 1 ELSE 0 END) AS low_items
       FROM ${source} ${clause}
-    `).get(params);
+    `, params);
     const limit = int(req.query.per_page, 'per_page', { required: false, def: 100, min: 1, max: 2000 });
     const page = int(req.query.page, 'page', { required: false, def: 1, min: 1 });
     // นับ Serial ให้ตรงกับขอบเขตที่ดูอยู่ (รายคลัง หรือรวมทุกคลัง)
     // ชื่อคอลัมน์ใน clause/order ไม่ต้องเติม prefix เพราะ SQLite แปลงให้ชี้ตาราง b เอง
     const whFilter = whId ? 'AND s.warehouse_id = @warehouse_id' : '';
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT b.*,
              (SELECT COUNT(*) FROM serials s WHERE s.item_id = b.item_id AND s.status = 'in_stock' ${whFilter}) AS serial_in_stock,
              (SELECT COUNT(*) FROM serials s WHERE s.item_id = b.item_id AND s.status = 'issued'   ${whFilter}) AS serial_issued
       FROM ${source} b ${clause}
       ORDER BY ${order}
       LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit, offset: (page - 1) * limit });
+    `, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit, summary, warehouse_id: whId });
   }));
 
-  router.get('/balance.csv', wrap((req, res) => {
+  router.get('/balance.csv', wrap(async (req, res) => {
     const { clause, params, order, source } = balanceQuery(req);
-    const rows = db.prepare(`SELECT * FROM ${source} ${clause} ORDER BY ${order}`).all(params);
+    const rows = await db.all(`SELECT * FROM ${source} ${clause} ORDER BY ${order}`, params);
     res.type('text/csv; charset=utf-8').attachment('stock-balance.csv').send(toCsv(rows, {
       warehouse_code: 'คลัง', sku: 'รหัสอุปกรณ์', name: 'ชื่ออุปกรณ์', category_name: 'หมวดหมู่', brand: 'ยี่ห้อ', model: 'รุ่น',
       unit: 'หน่วย', total_in: 'รับเข้า', total_out: 'จ่ายออก', balance: 'คงเหลือ',
@@ -75,8 +75,8 @@ export function stockRoutes(db) {
    * คืนค่าเป็น 1 แถวต่ออุปกรณ์ พร้อมยอดแยกรายคลัง (by_warehouse) และยอดรวม (total)
    * ใช้แสดงตารางแบบ: อุปกรณ์ | MMT | MTHAI | รวม
    */
-  router.get('/by-warehouse', wrap((req, res) => {
-    const warehouses = db.prepare('SELECT id, code, name FROM warehouses WHERE active = 1 ORDER BY sort_order, id').all();
+  router.get('/by-warehouse', wrap(async (req, res) => {
+    const warehouses = await db.all('SELECT id, code, name FROM warehouses WHERE active = 1 ORDER BY sort_order, id');
 
     const where = ['1 = 1'];
     const params = {};
@@ -89,7 +89,7 @@ export function stockRoutes(db) {
     else where.push('i.active = 1');
     const clause = `WHERE ${where.join(' AND ')}`;
 
-    const rows = db.prepare(`
+    const rows = await db.all(`
       SELECT i.id AS item_id, i.sku, i.name, i.unit, i.min_qty, i.unit_cost, i.track_serial,
              c.name AS category_name,
              m.warehouse_id, COALESCE(m.balance, 0) AS balance
@@ -100,8 +100,8 @@ export function stockRoutes(db) {
         FROM stock_moves GROUP BY item_id, warehouse_id
       ) m ON m.item_id = i.id
       ${clause}
-      ORDER BY i.name COLLATE NOCASE
-    `).all(params);
+      ORDER BY i.name
+    `, params);
 
     // ยุบหลายแถว (อุปกรณ์ × คลัง) ให้เหลือแถวเดียวต่ออุปกรณ์
     const byItem = new Map();
@@ -143,9 +143,9 @@ export function stockRoutes(db) {
     ])),
   });
 
-  router.get('/by-warehouse.csv', wrap((req, res) => {
-    const warehouses = db.prepare('SELECT id, code FROM warehouses WHERE active = 1 ORDER BY sort_order, id').all();
-    const payload = db.prepare(`
+  router.get('/by-warehouse.csv', wrap(async (req, res) => {
+    const warehouses = await db.all('SELECT id, code FROM warehouses WHERE active = 1 ORDER BY sort_order, id');
+    const payload = await db.all(`
       SELECT i.id AS item_id, i.sku, i.name, i.unit, c.name AS category_name, i.min_qty,
              m.warehouse_id, COALESCE(m.balance, 0) AS balance
       FROM items i
@@ -153,8 +153,8 @@ export function stockRoutes(db) {
       LEFT JOIN (SELECT item_id, warehouse_id, SUM(qty) AS balance FROM stock_moves GROUP BY item_id, warehouse_id) m
         ON m.item_id = i.id
       WHERE i.active = 1
-      ORDER BY i.name COLLATE NOCASE
-    `).all();
+      ORDER BY i.name
+    `);
 
     const map = new Map();
     for (const r of payload) {
@@ -177,12 +177,12 @@ export function stockRoutes(db) {
   }));
 
   /* ---------- อุปกรณ์ใกล้หมด / หมด ---------- */
-  router.get('/low', wrap((req, res) => {
-    const data = db.prepare(`
+  router.get('/low', wrap(async (req, res) => {
+    const data = await db.all(`
       SELECT * FROM v_stock_balance
       WHERE active = 1 AND min_qty > 0 AND balance <= min_qty
-      ORDER BY (balance - min_qty), name COLLATE NOCASE
-    `).all();
+      ORDER BY (balance - min_qty), name
+    `);
     res.json({ data, total: data.length });
   }));
 
@@ -218,19 +218,18 @@ export function stockRoutes(db) {
     LEFT JOIN warehouses w ON w.id = m.warehouse_id
     LEFT JOIN users u ON u.id = m.created_by`;
 
-  router.get('/moves', wrap((req, res) => {
+  router.get('/moves', wrap(async (req, res) => {
     const { clause, params } = movesQuery(req);
-    const total = db.prepare(`SELECT COUNT(*) AS n FROM stock_moves m JOIN items i ON i.id = m.item_id ${clause}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n FROM stock_moves m JOIN items i ON i.id = m.item_id ${clause}`, params)).n;
     const limit = int(req.query.per_page, 'per_page', { required: false, def: 100, min: 1, max: 1000 });
     const page = int(req.query.page, 'page', { required: false, def: 1, min: 1 });
-    const data = db.prepare(`${MOVES_SELECT} ${clause} ORDER BY m.moved_at DESC, m.id DESC LIMIT @limit OFFSET @offset`)
-      .all({ ...params, limit, offset: (page - 1) * limit });
+    const data = await db.all(`${MOVES_SELECT} ${clause} ORDER BY m.moved_at DESC, m.id DESC LIMIT @limit OFFSET @offset`, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit });
   }));
 
-  router.get('/moves.csv', wrap((req, res) => {
+  router.get('/moves.csv', wrap(async (req, res) => {
     const { clause, params } = movesQuery(req);
-    const rows = db.prepare(`${MOVES_SELECT} ${clause} ORDER BY m.moved_at DESC, m.id DESC`).all(params);
+    const rows = await db.all(`${MOVES_SELECT} ${clause} ORDER BY m.moved_at DESC, m.id DESC`, params);
     res.type('text/csv; charset=utf-8').attachment('stock-moves.csv').send(toCsv(rows, {
       moved_at: 'วันที่', doc_no: 'เลขที่เอกสาร', move_type: 'ประเภท', warehouse_code: 'คลัง',
       sku: 'รหัสอุปกรณ์', item_name: 'ชื่ออุปกรณ์', serial_no: 'Serial', qty: 'จำนวน',
@@ -239,15 +238,13 @@ export function stockRoutes(db) {
   }));
 
   /* ---------- การ์ดสต็อกรายอุปกรณ์ (running balance) ---------- */
-  router.get('/card/:itemId', wrap((req, res) => {
+  router.get('/card/:itemId', wrap(async (req, res) => {
     const itemId = int(req.params.itemId, 'itemId');
     const whId = req.query.warehouse_id ? int(req.query.warehouse_id, 'คลัง') : null;
     const item = whId
-      ? db.prepare('SELECT * FROM v_stock_balance_wh WHERE item_id = ? AND warehouse_id = ?').get(itemId, whId)
-      : db.prepare('SELECT * FROM v_stock_balance WHERE item_id = ?').get(itemId);
-    const moves = db.prepare(
-      `${MOVES_SELECT} WHERE m.item_id = @item_id ${whId ? 'AND m.warehouse_id = @warehouse_id' : ''} ORDER BY m.moved_at, m.id`,
-    ).all(whId ? { item_id: itemId, warehouse_id: whId } : { item_id: itemId });
+      ? await db.get('SELECT * FROM v_stock_balance_wh WHERE item_id = ? AND warehouse_id = ?', [itemId, whId])
+      : await db.get('SELECT * FROM v_stock_balance WHERE item_id = ?', itemId);
+    const moves = await db.all(`${MOVES_SELECT} WHERE m.item_id = @item_id ${whId ? 'AND m.warehouse_id = @warehouse_id' : ''} ORDER BY m.moved_at, m.id`, whId ? { item_id: itemId, warehouse_id: whId } : { item_id: itemId });
     let running = 0;
     const rows = moves.map((m) => { running += m.qty; return { ...m, running_balance: running }; });
     res.json({ item, data: rows.reverse() });

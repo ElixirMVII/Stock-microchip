@@ -41,14 +41,22 @@ export function createApp(db, { requireLogin = true } = {}) {
     if (err instanceof HttpError) {
       return res.status(err.status).json({ error: err.message, details: err.details });
     }
-    if (err?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+    // ข้อผิดพลาดจาก MySQL / MariaDB
+    if (err?.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: 'ข้อมูลซ้ำกับที่มีอยู่ในระบบแล้ว (รหัสหรือชื่อต้องไม่ซ้ำ)' });
     }
-    if (err?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+    if (err?.code === 'ER_ROW_IS_REFERENCED_2' || err?.code === 'ER_NO_REFERENCED_ROW_2'
+        || err?.code === 'ER_ROW_IS_REFERENCED' || err?.code === 'ER_NO_REFERENCED_ROW') {
       return res.status(409).json({ error: 'ข้อมูลนี้ถูกอ้างอิงอยู่ที่อื่น หรืออ้างอิงไปยังข้อมูลที่ไม่มีอยู่จริง' });
     }
-    if (err?.code?.startsWith?.('SQLITE_CONSTRAINT')) {
+    if (err?.code === 'ER_CHECK_CONSTRAINT_VIOLATED' || err?.code === 'ER_CONSTRAINT_FAILED'
+        || err?.code === 'WARN_DATA_TRUNCATED' || err?.code === 'ER_DATA_TOO_LONG') {
       return res.status(400).json({ error: 'ข้อมูลไม่ผ่านเงื่อนไขของฐานข้อมูล กรุณาตรวจสอบค่าที่กรอก' });
+    }
+    if (err?.code === 'ECONNREFUSED' || err?.code === 'PROTOCOL_CONNECTION_LOST'
+        || err?.code === 'ER_ACCESS_DENIED_ERROR' || err?.fatal) {
+      console.error('[db]', err);
+      return res.status(503).json({ error: 'เชื่อมต่อฐานข้อมูลไม่ได้ กรุณาลองใหม่อีกครั้งหรือติดต่อผู้ดูแลระบบ' });
     }
     if (err?.type === 'entity.parse.failed') {
       return res.status(400).json({ error: 'รูปแบบข้อมูล JSON ไม่ถูกต้อง' });

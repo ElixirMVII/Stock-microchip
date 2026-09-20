@@ -58,16 +58,16 @@ export function documentRoutes(db) {
   /* ================= ใบรับเข้า (IN) ================= */
   const receipts = Router();
 
-  receipts.get('/', wrap((req, res) => {
+  receipts.get('/', wrap(async (req, res) => {
     const { clause, params } = buildFilters(req, 'receive_date', ['d.doc_no', 'd.po_no', 'd.note', 's.name']);
     const base = `FROM receipts d
       LEFT JOIN suppliers s ON s.id = d.supplier_id
       LEFT JOIN users u ON u.id = d.created_by
       JOIN warehouses w ON w.id = d.warehouse_id
       ${clause}`;
-    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n ${base}`, params)).n;
     const { limit, page } = paginate(req);
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT d.*, s.name AS supplier_name, u.full_name AS created_by_name,
              w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COALESCE(SUM(qty), 0) FROM receipt_lines WHERE receipt_id = d.id) AS total_qty,
@@ -75,13 +75,13 @@ export function documentRoutes(db) {
              (SELECT COALESCE(SUM(qty * unit_cost), 0) FROM receipt_lines WHERE receipt_id = d.id) AS total_cost
       ${base}
       ORDER BY d.receive_date DESC, d.id DESC LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit, offset: (page - 1) * limit });
+    `, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit });
   }));
 
-  receipts.get('/:id', wrap((req, res) => {
+  receipts.get('/:id', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const doc = db.prepare(`
+    const doc = await db.get(`
       SELECT d.*, s.name AS supplier_name, u.full_name AS created_by_name, v.full_name AS voided_by_name,
              w.code AS warehouse_code, w.name AS warehouse_name
       FROM receipts d
@@ -90,22 +90,22 @@ export function documentRoutes(db) {
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
       WHERE d.id = ?
-    `).get(id);
+    `, id);
     if (!doc) throw notFound('ไม่พบใบรับเข้า');
-    doc.lines = db.prepare(`
+    doc.lines = await db.all(`
       SELECT l.*, i.sku, i.name AS item_name, i.unit, i.track_serial, c.name AS category_name,
-             (SELECT GROUP_CONCAT(m.serial_no, ', ') FROM stock_moves m
+             (SELECT GROUP_CONCAT(m.serial_no SEPARATOR ', ') FROM stock_moves m
                WHERE m.line_id = l.id AND m.doc_type = 'receipt' AND m.doc_id = d.id AND m.move_type = 'IN') AS serial_list
       FROM receipt_lines l
       JOIN items i ON i.id = l.item_id
       JOIN categories c ON c.id = i.category_id
       JOIN receipts d ON d.id = l.receipt_id
       WHERE l.receipt_id = ? ORDER BY l.id
-    `).all(id);
+    `, id);
     res.json(doc);
   }));
 
-  receipts.post('/', requireRole('officer'), wrap((req, res) => {
+  receipts.post('/', requireRole('officer'), wrap(async (req, res) => {
     const data = {
       warehouse_id: int(req.body.warehouse_id, 'คลังที่รับเข้า'),
       receive_date: date(req.body.receive_date, 'วันที่รับเข้า'),
@@ -114,15 +114,15 @@ export function documentRoutes(db) {
       note: str(req.body.note, 'หมายเหตุ', { required: false, max: 500 }),
       lines: parseLines(req.body, 'receipt'),
     };
-    const out = db.transaction(() => postReceipt(db, data, req.user?.id ?? null))();
-    logAudit(db, req, 'post', 'receipt', out.id, `รับเข้า ${out.doc_no}`);
+    const out = await db.txRetry((t) => postReceipt(t, data, req.user?.id ?? null));
+    await logAudit(db, req, 'post', 'receipt', out.id, `รับเข้า ${out.doc_no}`);
     res.status(201).json(out);
   }));
 
   /* ================= ใบเบิกออก (OUT) ================= */
   const issues = Router();
 
-  issues.get('/', wrap((req, res) => {
+  issues.get('/', wrap(async (req, res) => {
     const { clause, params } = buildFilters(req, 'issue_date', ['d.doc_no', 'd.remark', 'e.name', 'e.emp_code']);
     const extra = [];
     if (req.query.employee_id) { extra.push('d.employee_id = @employee_id'); params.employee_id = Number(req.query.employee_id); }
@@ -135,22 +135,22 @@ export function documentRoutes(db) {
       LEFT JOIN departments dp ON dp.id = e.department_id
       LEFT JOIN is_staff st ON st.id = d.is_staff_id
       ${full}`;
-    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n ${base}`, params)).n;
     const { limit, page } = paginate(req);
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name,
              st.name AS is_staff_name, w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COALESCE(SUM(qty), 0) FROM issue_lines WHERE issue_id = d.id) AS total_qty,
              (SELECT COUNT(*) FROM issue_lines WHERE issue_id = d.id)              AS line_count
       ${base}
       ORDER BY d.issue_date DESC, d.id DESC LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit, offset: (page - 1) * limit });
+    `, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit });
   }));
 
-  issues.get('/:id', wrap((req, res) => {
+  issues.get('/:id', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const doc = db.prepare(`
+    const doc = await db.get(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name,
              st.name AS is_staff_name, u.full_name AS created_by_name, v.full_name AS voided_by_name,
              w.code AS warehouse_code, w.name AS warehouse_name
@@ -162,21 +162,21 @@ export function documentRoutes(db) {
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
       WHERE d.id = ?
-    `).get(id);
+    `, id);
     if (!doc) throw notFound('ไม่พบใบเบิก');
-    doc.lines = db.prepare(`
+    doc.lines = await db.all(`
       SELECT l.*, i.sku, i.name AS item_name, i.unit, i.track_serial, c.name AS category_name, c.kind AS category_kind,
-             (SELECT GROUP_CONCAT(m.serial_no, ', ') FROM stock_moves m
+             (SELECT GROUP_CONCAT(m.serial_no SEPARATOR ', ') FROM stock_moves m
                WHERE m.line_id = l.id AND m.doc_type = 'issue' AND m.doc_id = l.issue_id AND m.move_type = 'OUT') AS serial_list
       FROM issue_lines l
       JOIN items i ON i.id = l.item_id
       JOIN categories c ON c.id = i.category_id
       WHERE l.issue_id = ? ORDER BY l.id
-    `).all(id);
+    `, id);
     res.json(doc);
   }));
 
-  issues.post('/', requireRole('officer'), wrap((req, res) => {
+  issues.post('/', requireRole('officer'), wrap(async (req, res) => {
     const data = {
       warehouse_id: int(req.body.warehouse_id, 'คลังที่เบิกออก'),
       issue_date: date(req.body.issue_date, 'วันที่เบิก'),
@@ -186,15 +186,15 @@ export function documentRoutes(db) {
       remark: str(req.body.remark, 'หมายเหตุ', { required: false, max: 500 }),
       lines: parseLines(req.body, 'issue'),
     };
-    const out = db.transaction(() => postIssue(db, data, req.user?.id ?? null))();
-    logAudit(db, req, 'post', 'issue', out.id, `เบิกออก ${out.doc_no}`);
+    const out = await db.txRetry((t) => postIssue(t, data, req.user?.id ?? null));
+    await logAudit(db, req, 'post', 'issue', out.id, `เบิกออก ${out.doc_no}`);
     res.status(201).json(out);
   }));
 
   /* ================= ใบรับคืน (RETURN) ================= */
   const returns = Router();
 
-  returns.get('/', wrap((req, res) => {
+  returns.get('/', wrap(async (req, res) => {
     const { clause, params } = buildFilters(req, 'return_date', ['d.doc_no', 'd.note', 'e.name', 'e.emp_code']);
     const base = `
       FROM returns d
@@ -203,21 +203,21 @@ export function documentRoutes(db) {
       LEFT JOIN departments dp ON dp.id = e.department_id
       LEFT JOIN is_staff st ON st.id = d.is_staff_id
       ${clause}`;
-    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n ${base}`, params)).n;
     const { limit, page } = paginate(req);
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name, st.name AS is_staff_name,
              w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COALESCE(SUM(qty), 0) FROM return_lines WHERE return_id = d.id) AS total_qty,
              (SELECT COUNT(*) FROM return_lines WHERE return_id = d.id)              AS line_count
       ${base} ORDER BY d.return_date DESC, d.id DESC LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit, offset: (page - 1) * limit });
+    `, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit });
   }));
 
-  returns.get('/:id', wrap((req, res) => {
+  returns.get('/:id', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const doc = db.prepare(`
+    const doc = await db.get(`
       SELECT d.*, e.name AS employee_name, e.emp_code, dp.name AS department_name,
              st.name AS is_staff_name, u.full_name AS created_by_name, v.full_name AS voided_by_name,
              w.code AS warehouse_code, w.name AS warehouse_name
@@ -229,22 +229,22 @@ export function documentRoutes(db) {
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
       WHERE d.id = ?
-    `).get(id);
+    `, id);
     if (!doc) throw notFound('ไม่พบใบรับคืน');
-    doc.lines = db.prepare(`
+    doc.lines = await db.all(`
       SELECT l.*, i.sku, i.name AS item_name, i.unit, i.track_serial, c.name AS category_name,
-             (SELECT GROUP_CONCAT(se.serial_no, ', ') FROM serial_events ev
+             (SELECT GROUP_CONCAT(se.serial_no SEPARATOR ', ') FROM serial_events ev
                 JOIN serials se ON se.id = ev.serial_id
                WHERE ev.line_id = l.id AND ev.doc_type = 'return' AND ev.doc_id = l.return_id) AS serial_list
       FROM return_lines l
       JOIN items i ON i.id = l.item_id
       JOIN categories c ON c.id = i.category_id
       WHERE l.return_id = ? ORDER BY l.id
-    `).all(id);
+    `, id);
     res.json(doc);
   }));
 
-  returns.post('/', requireRole('officer'), wrap((req, res) => {
+  returns.post('/', requireRole('officer'), wrap(async (req, res) => {
     const data = {
       warehouse_id: int(req.body.warehouse_id, 'คลังที่รับคืนเข้า'),
       return_date: date(req.body.return_date, 'วันที่รับคืน'),
@@ -253,34 +253,34 @@ export function documentRoutes(db) {
       note: str(req.body.note, 'หมายเหตุ', { required: false, max: 500 }),
       lines: parseLines(req.body, 'return'),
     };
-    const out = db.transaction(() => postReturn(db, data, req.user?.id ?? null))();
-    logAudit(db, req, 'post', 'return', out.id, `รับคืน ${out.doc_no}`);
+    const out = await db.txRetry((t) => postReturn(t, data, req.user?.id ?? null));
+    await logAudit(db, req, 'post', 'return', out.id, `รับคืน ${out.doc_no}`);
     res.status(201).json(out);
   }));
 
   /* ================= ใบปรับปรุงสต็อก (ADJUST) ================= */
   const adjustments = Router();
 
-  adjustments.get('/', wrap((req, res) => {
+  adjustments.get('/', wrap(async (req, res) => {
     const { clause, params } = buildFilters(req, 'adjust_date', ['d.doc_no', 'd.note']);
     const base = `FROM adjustments d
       LEFT JOIN users u ON u.id = d.created_by
       JOIN warehouses w ON w.id = d.warehouse_id ${clause}`;
-    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n ${base}`, params)).n;
     const { limit, page } = paginate(req);
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT d.*, u.full_name AS created_by_name, w.code AS warehouse_code, w.name AS warehouse_name,
              (SELECT COUNT(*) FROM adjustment_lines WHERE adjustment_id = d.id) AS line_count,
              (SELECT COALESCE(SUM(qty_diff), 0) FROM adjustment_lines WHERE adjustment_id = d.id) AS net_qty
       ${base}
       ORDER BY d.adjust_date DESC, d.id DESC LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit, offset: (page - 1) * limit });
+    `, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit });
   }));
 
-  adjustments.get('/:id', wrap((req, res) => {
+  adjustments.get('/:id', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const doc = db.prepare(`
+    const doc = await db.get(`
       SELECT d.*, u.full_name AS created_by_name, v.full_name AS voided_by_name,
              w.code AS warehouse_code, w.name AS warehouse_name
       FROM adjustments d
@@ -288,19 +288,19 @@ export function documentRoutes(db) {
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
       WHERE d.id = ?
-    `).get(id);
+    `, id);
     if (!doc) throw notFound('ไม่พบใบปรับปรุง');
-    doc.lines = db.prepare(`
+    doc.lines = await db.all(`
       SELECT l.*, i.sku, i.name AS item_name, i.unit, c.name AS category_name
       FROM adjustment_lines l
       JOIN items i ON i.id = l.item_id
       JOIN categories c ON c.id = i.category_id
       WHERE l.adjustment_id = ? ORDER BY l.id
-    `).all(id);
+    `, id);
     res.json(doc);
   }));
 
-  adjustments.post('/', requireRole('officer'), wrap((req, res) => {
+  adjustments.post('/', requireRole('officer'), wrap(async (req, res) => {
     const data = {
       warehouse_id: int(req.body.warehouse_id, 'คลังที่ปรับปรุง'),
       adjust_date: date(req.body.adjust_date, 'วันที่ปรับปรุง'),
@@ -308,15 +308,15 @@ export function documentRoutes(db) {
       note: str(req.body.note, 'หมายเหตุ', { required: false, max: 500 }),
       lines: parseLines(req.body, 'adjustment'),
     };
-    const out = db.transaction(() => postAdjustment(db, data, req.user?.id ?? null))();
-    logAudit(db, req, 'post', 'adjustment', out.id, `ปรับปรุง ${out.doc_no}`);
+    const out = await db.txRetry((t) => postAdjustment(t, data, req.user?.id ?? null));
+    await logAudit(db, req, 'post', 'adjustment', out.id, `ปรับปรุง ${out.doc_no}`);
     res.status(201).json(out);
   }));
 
   /* ================= ใบโอนย้ายระหว่างคลัง (TRANSFER) ================= */
   const transfers = Router();
 
-  transfers.get('/', wrap((req, res) => {
+  transfers.get('/', wrap(async (req, res) => {
     const where = [];
     const params = {};
     if (req.query.from) { where.push('d.transfer_date >= @from'); params.from = date(req.query.from, 'ตั้งแต่วันที่'); }
@@ -335,21 +335,21 @@ export function documentRoutes(db) {
       JOIN warehouses wt ON wt.id = d.to_warehouse_id
       LEFT JOIN users u ON u.id = d.created_by
       ${clause}`;
-    const total = db.prepare(`SELECT COUNT(*) AS n ${base}`).get(params).n;
+    const total = (await db.get(`SELECT COUNT(*) AS n ${base}`, params)).n;
     const { limit, page } = paginate(req);
-    const data = db.prepare(`
+    const data = await db.all(`
       SELECT d.*, wf.code AS from_code, wf.name AS from_name, wt.code AS to_code, wt.name AS to_name,
              u.full_name AS created_by_name,
              (SELECT COALESCE(SUM(qty), 0) FROM transfer_lines WHERE transfer_id = d.id) AS total_qty,
              (SELECT COUNT(*) FROM transfer_lines WHERE transfer_id = d.id)              AS line_count
       ${base} ORDER BY d.transfer_date DESC, d.id DESC LIMIT @limit OFFSET @offset
-    `).all({ ...params, limit, offset: (page - 1) * limit });
+    `, { ...params, limit, offset: (page - 1) * limit });
     res.json({ data, total, page, per_page: limit });
   }));
 
-  transfers.get('/:id', wrap((req, res) => {
+  transfers.get('/:id', wrap(async (req, res) => {
     const id = int(req.params.id, 'id');
-    const doc = db.prepare(`
+    const doc = await db.get(`
       SELECT d.*, wf.code AS from_code, wf.name AS from_name, wt.code AS to_code, wt.name AS to_name,
              u.full_name AS created_by_name, v.full_name AS voided_by_name
       FROM transfers d
@@ -358,9 +358,9 @@ export function documentRoutes(db) {
       LEFT JOIN users u ON u.id = d.created_by
       LEFT JOIN users v ON v.id = d.voided_by
       WHERE d.id = ?
-    `).get(id);
+    `, id);
     if (!doc) throw notFound('ไม่พบใบโอนย้าย');
-    doc.lines = db.prepare(`
+    doc.lines = await db.all(`
       SELECT l.*, i.sku, i.name AS item_name, i.unit, i.track_serial, c.name AS category_name,
              (SELECT GROUP_CONCAT(DISTINCT m.serial_no) FROM stock_moves m
                WHERE m.line_id = l.id AND m.doc_type = 'transfer' AND m.doc_id = l.transfer_id) AS serial_list
@@ -368,11 +368,11 @@ export function documentRoutes(db) {
       JOIN items i ON i.id = l.item_id
       JOIN categories c ON c.id = i.category_id
       WHERE l.transfer_id = ? ORDER BY l.id
-    `).all(id);
+    `, id);
     res.json(doc);
   }));
 
-  transfers.post('/', requireRole('officer'), wrap((req, res) => {
+  transfers.post('/', requireRole('officer'), wrap(async (req, res) => {
     const data = {
       transfer_date: date(req.body.transfer_date, 'วันที่โอนย้าย'),
       from_warehouse_id: int(req.body.from_warehouse_id, 'คลังต้นทาง'),
@@ -380,20 +380,20 @@ export function documentRoutes(db) {
       note: str(req.body.note, 'หมายเหตุ', { required: false, max: 500 }),
       lines: parseLines(req.body, 'transfer'),
     };
-    const out = db.transaction(() => postTransfer(db, data, req.user?.id ?? null))();
-    logAudit(db, req, 'post', 'transfer', out.id, `โอนย้าย ${out.doc_no}`);
+    const out = await db.txRetry((t) => postTransfer(t, data, req.user?.id ?? null));
+    await logAudit(db, req, 'post', 'transfer', out.id, `โอนย้าย ${out.doc_no}`);
     res.status(201).json(out);
   }));
 
   /* ================= ยกเลิกเอกสาร (ใช้ร่วมกันทุกประเภท) ================= */
   for (const [type, r] of [['receipt', receipts], ['issue', issues], ['return', returns],
     ['adjustment', adjustments], ['transfer', transfers]]) {
-    r.post('/:id/void', requireRole('officer'), wrap((req, res) => {
+    r.post('/:id/void', requireRole('officer'), wrap(async (req, res) => {
       const id = int(req.params.id, 'id');
       const reason = str(req.body?.reason, 'เหตุผลการยกเลิก', { required: false, max: 300 });
       docConfig(type);
-      const out = db.transaction(() => voidDocument(db, type, id, reason, req.user?.id ?? null))();
-      logAudit(db, req, 'void', type, id, `ยกเลิก ${out.doc_no}${reason ? ` — ${reason}` : ''}`);
+      const out = await db.tx((t) => voidDocument(t, type, id, reason, req.user?.id ?? null));
+      await logAudit(db, req, 'void', type, id, `ยกเลิก ${out.doc_no}${reason ? ` — ${reason}` : ''}`);
       res.json(out);
     }));
   }
