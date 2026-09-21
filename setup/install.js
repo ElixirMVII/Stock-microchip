@@ -60,6 +60,10 @@ async function main() {
       );
       for (const h of ['localhost', '%']) {
         await admin.query('CREATE USER IF NOT EXISTS ?@? IDENTIFIED BY ?', [appUser, h, appPass]);
+        // CREATE USER IF NOT EXISTS จะไม่แตะรหัสผ่านของบัญชีที่มีอยู่แล้ว
+        // จึงต้อง ALTER ซ้ำ เพื่อให้รหัสตรงกับที่เขียนลง config.ini เสมอ
+        // (สำคัญตอนรัน setup ซ้ำเพราะพิมพ์ผิดรอบแรก)
+        await admin.query('ALTER USER ?@? IDENTIFIED BY ?', [appUser, h, appPass]);
         await admin.query(`GRANT ALL PRIVILEGES ON ${quoteIdent(dbName)}.* TO ?@?`, [appUser, h]);
       }
       await admin.query('FLUSH PRIVILEGES');
